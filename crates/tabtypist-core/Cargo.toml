@@ -1,0 +1,42 @@
+[package]
+name = "tabtypist-core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tabtypist-core"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# llama.cpp bindings
+llama-cpp-2 = "0.1.146"
+
+# HTTP for model downloader
+reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Crypto for model verification
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+base64 = "0.22"
+
+# Settings store
+dirs = "5"
+
+# Stream iteration for downloader
+futures-util = "0.3"
+
+# Atomic file writes
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+mockall = "0.13"
