@@ -134,19 +134,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
             switch method {
             case "showOverlay":
-                let x      = cgf(params["x"])
-                let y      = cgf(params["y"])
-                let height = cgf(params["height"], fallback: 16)
-                let fw     = cgf(params["inputFrameW"])
-                let fh     = cgf(params["inputFrameH"])
+                let x        = cgf(params["x"])
+                let y        = cgf(params["y"])
+                let height   = cgf(params["height"], fallback: 16)
+                let fontSize = cgf(params["fontSize"])   // 0 if unavailable
+                let fw       = cgf(params["inputFrameW"])
+                let fh       = cgf(params["inputFrameH"])
                 let inputFrame: CGRect? = (fw > 0 && fh > 0)
                     ? CGRect(x: cgf(params["inputFrameX"]), y: cgf(params["inputFrameY"]),
                              width: fw, height: fh)
                     : nil
                 let text   = (params["text"] as? String) ?? ""
-                fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) field=\(inputFrame.map { "\($0)" } ?? "nil") text=\(text.prefix(40))\n", stderr)
+                fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) fs=\(fontSize) field=\(inputFrame.map { "\($0)" } ?? "nil") text=\(text.prefix(40))\n", stderr)
                 OverlayWindow.shared.show(
-                    text: text, x: x, y: y, caretHeight: height, inputFrame: inputFrame
+                    text: text, x: x, y: y, caretHeight: height,
+                    fontSize: fontSize, inputFrame: inputFrame
                 )
                 KeyCapture.shared.setCompletion(text)
 

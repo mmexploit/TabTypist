@@ -30,6 +30,7 @@ struct ContextUpdate {
     caret_x:        f64,
     caret_y:        f64,
     caret_height:   f64,
+    font_size:      f64,   // AX-reported point size; 0 = unavailable
     input_frame_x:  f64,
     input_frame_y:  f64,
     input_frame_w:  f64,
@@ -192,6 +193,7 @@ async fn main() -> Result<()> {
                                     "x":           update.caret_x,
                                     "y":           update.caret_y,
                                     "height":      update.caret_height,
+                                    "fontSize":    update.font_size,
                                     "inputFrameX": update.input_frame_x,
                                     "inputFrameY": update.input_frame_y,
                                     "inputFrameW": update.input_frame_w,
@@ -247,6 +249,21 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Returns true when the prefix has enough context for a meaningful completion.
+/// Mirrors CoTypist's behaviour: require at least 2 words in the current sentence
+/// fragment so the model has a clear picture of the intended idea before suggesting.
+fn should_trigger_completion(prefix: &str) -> bool {
+    // Isolate the current sentence/line fragment: text after the last hard boundary.
+    let tail = prefix
+        .rsplit(|c: char| c == '\n' || c == '.' || c == '!' || c == '?')
+        .next()
+        .unwrap_or(prefix)
+        .trim();
+    let word_count = tail.split_whitespace().count();
+    // Two or more words gives the model a meaningful signal.
+    word_count >= 2
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_message(
     msg: RpcMessage,
@@ -276,6 +293,8 @@ async fn handle_message(
             let caret_y         = params["caretY"].as_f64().unwrap_or(0.0);
             // 0.0 = AX couldn't determine caret bounds (Electron / terminal apps).
             let caret_height    = params["caretHeight"].as_f64().unwrap_or(0.0);
+            // 0.0 = AX didn't report a font size; overlay falls back to caret-height estimate.
+            let font_size       = params["fontSize"].as_f64().unwrap_or(0.0);
             // Focused-field bounds in Cocoa coords; zero width/height = unavailable.
             let input_frame_x   = params["inputFrameX"].as_f64().unwrap_or(0.0);
             let input_frame_y   = params["inputFrameY"].as_f64().unwrap_or(0.0);
@@ -330,6 +349,17 @@ async fn handle_message(
             // overlay sitting at its old position for ~1 s while new inference runs, which
             // is far less broken than Tab not accepting.
 
+            // Suppress suggestions when there's not enough context for a useful completion.
+            // Require at least 2 words in the current sentence fragment so the model has
+            // a meaningful signal — avoids noisy single-word or empty-prefix suggestions.
+            if !should_trigger_completion(&prefix) {
+                let _ = ctx_tx.send(None);
+                let _ = transport.lock().await
+                    .send_notification("hideOverlay", serde_json::json!({}))
+                    .await;
+                return;
+            }
+
             // Publish to the debounce channel — do NOT spawn inference here.
             let _ = ctx_tx.send(Some(ContextUpdate {
                 prefix,
@@ -337,6 +367,7 @@ async fn handle_message(
                 caret_x,
                 caret_y,
                 caret_height,
+                font_size,
                 input_frame_x,
                 input_frame_y,
                 input_frame_w,

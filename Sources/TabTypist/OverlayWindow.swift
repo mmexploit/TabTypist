@@ -41,17 +41,20 @@ final class OverlayWindow: NSPanel {
         contentView = label
     }
 
-    func show(text: String, x: CGFloat, y: CGFloat, caretHeight: CGFloat, inputFrame: CGRect? = nil) {
-        // Scale font to match the target app's line height.
-        // caretHeight ≈ line height; system font line height ≈ fontSize * 1.33
-        let fontSize = max(10, caretHeight * 0.75)
-        let font = NSFont.systemFont(ofSize: fontSize, weight: .regular)
+    // fontSize: AX-reported point size for the focused field (0 = unavailable, use estimate).
+    func show(text: String, x: CGFloat, y: CGFloat, caretHeight: CGFloat,
+              fontSize: CGFloat = 0, inputFrame: CGRect? = nil) {
+        // Prefer the AX-reported font size; fall back to caret-height proportion.
+        let resolvedSize = fontSize > 4 ? fontSize : max(10, caretHeight * 0.75)
+        let font = NSFont.systemFont(ofSize: resolvedSize, weight: .regular)
 
-        // Usable region = focused text field's bounds (if AX gave them to us) intersected
-        // with the screen's visible frame. Cotabby calls this the "usable text frame": it's
-        // what stops ghost text from rendering past the right edge of the host window.
-        let screen = NSScreen.screens.first ?? NSScreen.main ?? NSScreen()
+        // Use the screen that actually contains the caret, not always the primary display.
+        let caretPoint = NSPoint(x: x, y: y)
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(caretPoint, $0.frame, false) })
+            ?? NSScreen.screens.first ?? NSScreen.main!
         let safe = screen.visibleFrame
+
+        // Usable width boundary for word-wrap column (field bounds clamped to screen).
         let usable: CGRect = {
             if let f = inputFrame {
                 let padded = f.insetBy(dx: 4, dy: 0)
@@ -61,18 +64,17 @@ final class OverlayWindow: NSPanel {
             return safe
         }()
 
-        // Measure the single-line width. If the completion fits on the current line within
-        // the room from caret to right edge, render inline. Otherwise wrap onto subsequent
-        // lines (first line indented to caret, overflow flush with the field's left edge).
+        // Inline fit check uses the screen right edge (not field right edge) so single-line
+        // suggestions aren't prematurely wrapped in narrow fields.
         let singleLineW = (text as NSString).size(withAttributes: [.font: font]).width + 4
-        let availableInline = max(20, usable.maxX - x)
+        let availableInline = max(20, safe.maxX - x)
 
         if singleLineW <= availableInline {
             renderSingleLine(text: text, font: font, caretX: x, caretY: y,
                              caretHeight: caretHeight, usable: usable, panelW: singleLineW)
         } else {
             renderWrapped(text: text, font: font, caretX: x, caretY: y,
-                          caretHeight: caretHeight, usable: usable)
+                          caretHeight: caretHeight, usable: usable, safe: safe)
         }
     }
 
@@ -88,14 +90,17 @@ final class OverlayWindow: NSPanel {
         label.maximumNumberOfLines = 1
         label.stringValue = text
 
-        let panelH = max((text as NSString).size(withAttributes: [.font: font]).height, caretHeight)
-        let rawY = caretY - caretHeight
+        // Panel height = caret height exactly so text sits on the same baseline as the
+        // host app's line. Using max(textHeight, caretHeight) caused the panel to extend
+        // above the caret when the font rendered taller than the caret, skewing text up.
+        let panelH = max(caretHeight, 14)
+        let rawY = caretY - caretHeight          // panel bottom aligns with caret bottom
         let fx = max(usable.minX, min(caretX, usable.maxX - panelW))
         let fy = max(usable.minY, min(rawY, usable.maxY - panelH))
 
         fputs("overlay(1L): (\(Int(fx)),\(Int(fy))) \(Int(panelW))×\(Int(panelH)) \"\(text.prefix(30))\"\n", stderr)
 
-        setFrame(NSRect(x: fx, y: fy, width: max(panelW, 20), height: max(panelH, 14)), display: true)
+        setFrame(NSRect(x: fx, y: fy, width: max(panelW, 20), height: panelH), display: true)
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
         alphaValue = 1
         orderFront(nil)
@@ -103,11 +108,10 @@ final class OverlayWindow: NSPanel {
 
     private func renderWrapped(
         text: String, font: NSFont, caretX: CGFloat, caretY: CGFloat,
-        caretHeight: CGFloat, usable: CGRect
+        caretHeight: CGFloat, usable: CGRect, safe: CGRect
     ) {
-        // Multi-line layout. Panel spans the full usable width inside the field. First line
-        // is indented to caret X via NSParagraphStyle.firstLineHeadIndent so the ghost text
-        // starts cleanly beside the cursor; overflow lines flush to the field's left edge.
+        // Panel spans the field's usable width. First line is indented to the caret via
+        // firstLineHeadIndent; overflow lines are flush with the field's left edge.
         let panelX = usable.minX
         let panelW = max(40, usable.width)
         let firstLineIndent = max(0, caretX - panelX)
@@ -128,28 +132,31 @@ final class OverlayWindow: NSPanel {
         label.usesSingleLineMode = false
         label.maximumNumberOfLines = 0
         label.cell?.wraps = true
-        label.cell?.truncatesLastVisibleLine = false
+        label.cell?.truncatesLastVisibleLine = true
         label.cell?.lineBreakMode = .byWordWrapping
         label.attributedStringValue = attrStr
 
-        // Measure wrapped height with the paragraph style applied so firstLineHeadIndent
-        // is accounted for. 4pt padding to match NSTextField's internal cell inset.
         let measureWidth = max(20, panelW - 4)
         let bounds = attrStr.boundingRect(
             with: CGSize(width: measureWidth, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        let panelH = max(ceil(bounds.height) + 2, caretHeight)
+        let fullPanelH = max(ceil(bounds.height) + 2, caretHeight)
 
-        // Anchor: top of the first wrapped line aligns with the top of the caret (caretY).
-        // In Cocoa (y-up) the panel's origin Y is caretY - panelH.
-        let rawY = caretY - panelH
-        let fx = max(usable.minX, min(panelX, usable.maxX - panelW))
-        let fy = max(usable.minY, min(rawY, usable.maxY - panelH))
+        // Anchor: panel TOP = caretY (top of the caret line in Cocoa y-up coords).
+        // Extend DOWNWARD from there. Only clamp at the screen bottom — never push the
+        // panel above the caret, which would cover content and break small text boxes
+        // like Telegram's chat input where there is no room above.
+        let panelTopY  = caretY
+        let idealBotY  = panelTopY - fullPanelH
+        let clampedBotY = max(safe.minY, idealBotY)
+        let actualPanelH = max(caretHeight, panelTopY - clampedBotY)
 
-        fputs("overlay(ML): (\(Int(fx)),\(Int(fy))) \(Int(panelW))×\(Int(panelH)) indent=\(Int(firstLineIndent)) \"\(text.prefix(30))\"\n", stderr)
+        let fx = max(safe.minX, min(panelX, safe.maxX - panelW))
 
-        setFrame(NSRect(x: fx, y: fy, width: panelW, height: panelH), display: true)
+        fputs("overlay(ML): (\(Int(fx)),\(Int(clampedBotY))) \(Int(panelW))×\(Int(actualPanelH)) indent=\(Int(firstLineIndent)) \"\(text.prefix(30))\"\n", stderr)
+
+        setFrame(NSRect(x: fx, y: clampedBotY, width: panelW, height: actualPanelH), display: true)
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
         alphaValue = 1
         orderFront(nil)

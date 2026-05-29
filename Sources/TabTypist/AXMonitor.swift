@@ -126,6 +126,16 @@ final class AXMonitor: @unchecked Sendable {
         let caretX   = caretRect.origin.x + useCharOffset
         let screenY  = primaryScreenHeight - caretRect.origin.y   // top of caret in Cocoa
 
+        // Font size of the focused element. Many apps report this via kAXFontAttribute;
+        // fall back to 0 so the overlay can use its caretHeight-based estimate instead.
+        var axFontSize: CGFloat = 0
+        var fontAttr: AnyObject?
+        if AXUIElementCopyAttributeValue(axElement, "AXFont" as CFString, &fontAttr) == .success,
+           let fontDict = fontAttr as? [String: Any] {
+            if let sz = fontDict["AXFontSize"] as? CGFloat { axFontSize = sz }
+            else if let sz = fontDict["AXFontSize"] as? Double { axFontSize = CGFloat(sz) }
+        }
+
         // Input-field frame in Cocoa coords. Used downstream to clamp the overlay so it
         // can't render past the edge of the host text view. Zero = unavailable.
         var inputFrameAX = CGRect.zero
@@ -182,6 +192,7 @@ final class AXMonitor: @unchecked Sendable {
             "caretX":        Double(caretX),
             "caretY":        Double(screenY),
             "caretHeight":   Double(caretRect.height),   // 0 = no valid caret bounds
+            "fontSize":      Double(axFontSize),          // 0 = unavailable
             "inputFrameX":   Double(inputX),
             "inputFrameY":   Double(inputY),
             "inputFrameW":   Double(inputW),
