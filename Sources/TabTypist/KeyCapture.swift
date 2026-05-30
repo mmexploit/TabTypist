@@ -49,8 +49,12 @@ final class KeyCapture: @unchecked Sendable {
         isWordByWordInProgress = false
     }
 
-    // Returns the next word (up to and including the trailing space) and the remainder.
+    // autoAcceptTrailingPunctuation: when false, non-alphanumeric chars at the end of
+    // the accepted word are left in `remaining` so the user can accept them separately.
     private func nextWord(from text: String) -> (word: String, remaining: String) {
+        let autoAcceptPunct = UserDefaults.standard.object(forKey: "autoAcceptTrailingPunctuation")
+            .flatMap { $0 as? Bool } ?? true
+
         guard !text.isEmpty else { return ("", "") }
         var idx = text.startIndex
         var seenNonSpace = false
@@ -58,7 +62,7 @@ final class KeyCapture: @unchecked Sendable {
             let c = text[idx]
             if c == " " || c == "\t" {
                 if seenNonSpace {
-                    idx = text.index(after: idx) // include the trailing space
+                    idx = text.index(after: idx)
                     break
                 }
             } else {
@@ -66,7 +70,28 @@ final class KeyCapture: @unchecked Sendable {
             }
             idx = text.index(after: idx)
         }
-        return (String(text[..<idx]), String(text[idx...]))
+        var word = String(text[..<idx])
+        var remaining = String(text[idx...])
+
+        if !autoAcceptPunct {
+            // Strip trailing punctuation from `word` back into `remaining`.
+            // "Don't" and "U.S.A" are excluded: only strip the trailing run of
+            // non-alphanumeric chars if there are alphanumeric chars before them.
+            var splitAt = word.endIndex
+            var cursor = word.endIndex
+            while cursor > word.startIndex {
+                let prev = word.index(before: cursor)
+                if word[prev].isLetter || word[prev].isNumber { break }
+                splitAt = prev
+                cursor = prev
+            }
+            if splitAt < word.endIndex && splitAt > word.startIndex {
+                remaining = String(word[splitAt...]) + remaining
+                word = String(word[..<splitAt])
+            }
+        }
+
+        return (word, remaining)
     }
 
     func start() {

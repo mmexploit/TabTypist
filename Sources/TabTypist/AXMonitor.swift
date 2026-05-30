@@ -14,12 +14,25 @@ final class AXMonitor: @unchecked Sendable {
     private var axObserver: AXObserver?
     private var observedPid: pid_t = 0
 
+    // Latest OCR result (refreshed asynchronously on each context change).
+    private var latestVisualContext: String = ""
+
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
     private var currentPollInterval: TimeInterval = 0.08
     private var unchangedPollCount: Int = 0
 
     // Debounce for Apple Intelligence completions (mirrors the 75 ms Rust debounce).
     private var aiDebounceWork: DispatchWorkItem?
+
+    // Rolling average of single-character AX frame widths — used for post-accept
+    // caret position prediction while the real AX update is still in-flight.
+    private var charWidthSamples: [CGFloat] = []
+    private var lastFontSize: CGFloat = 0
+    private static let maxCharWidthSamples = 10
+
+    var avgCharWidth: CGFloat {
+        charWidthSamples.isEmpty ? 8 : charWidthSamples.reduce(0, +) / CGFloat(charWidthSamples.count)
+    }
 
     func start() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: currentPollInterval, repeats: true) { [weak self] _ in
@@ -47,9 +60,11 @@ final class AXMonitor: @unchecked Sendable {
         guard bundleId != ourBundleId else { return }
 
         if !lastBundleId.isEmpty && bundleId != lastBundleId {
-            DispatchQueue.main.async { OverlayWindow.shared.hide() }
+            DispatchQueue.main.async {
+                OverlayWindow.shared.hide()
+                FieldEdgeIndicator.shared.hide()
+            }
         }
-        // Update state so the poll loop agrees on the current app and won't double-hide.
         lastBundleId = bundleId
         lastPrefix = ""
     }
@@ -220,6 +235,19 @@ final class AXMonitor: @unchecked Sendable {
             else if let sz = fontDict["AXFontSize"] as? Double { axFontSize = CGFloat(sz) }
         }
 
+        // Collect char-width samples for post-accept caret prediction.
+        // Reset when font size or app changes to avoid stale averages.
+        if axFontSize != lastFontSize || bundleId != lastBundleId {
+            charWidthSamples.removeAll()
+            lastFontSize = axFontSize
+        }
+        if caretRect.width > 1 {
+            charWidthSamples.append(caretRect.width)
+            if charWidthSamples.count > AXMonitor.maxCharWidthSamples {
+                charWidthSamples.removeFirst()
+            }
+        }
+
         // Input-field frame in Cocoa coords. Used downstream to clamp the overlay so it
         // can't render past the edge of the host text view. Zero = unavailable.
         var inputFrameAX = CGRect.zero
@@ -294,6 +322,14 @@ final class AXMonitor: @unchecked Sendable {
         lastPrefix = prefix
         lastBundleId = bundleId
 
+        // Update field-edge indicator position.
+        let fieldFrame: CGRect? = inputFrameAX.height > 0
+            ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH) : nil
+        DispatchQueue.main.async {
+            if let f = fieldFrame { FieldEdgeIndicator.shared.show(inputFrame: f) }
+            else { FieldEdgeIndicator.shared.hide() }
+        }
+
         // Log once per real contextUpdate, not 20x/sec on idle polls.
         fputs("AXMonitor: primaryH=\(primaryScreenHeight) axRect=\(caretRect) caretX=\(caretX) screenY=\(screenY) field=(\(inputX),\(inputY),\(inputW),\(inputH)) bundle=\(bundleId)\n", stderr)
 
@@ -342,8 +378,16 @@ final class AXMonitor: @unchecked Sendable {
             }
         }
 
+        // Kick off OCR for the next contextUpdate cycle (non-blocking).
+        let ocrFrame = inputFrameAX
+        let visualCtxCopy = latestVisualContext
+        Task.detached(priority: .utility) { [weak self] in
+            if let text = await VisualContextCapture.shared.capture(above: ocrFrame) {
+                await MainActor.run { self?.latestVisualContext = text }
+            }
+        }
+
         // caretHeight=0 means AX couldn't determine caret bounds (Electron, terminal, etc.).
-        // Send caretHeight=0 as a sentinel so Rust skips showOverlay for those apps.
         // Cast CGFloat → Double explicitly: AnyCodable only encodes Double,
         // not CGFloat (a distinct Swift struct), so CGFloat values serialize as null.
         IPCBridge.shared.notify(method: "contextUpdate", params: [
@@ -357,8 +401,9 @@ final class AXMonitor: @unchecked Sendable {
             "inputFrameY":   Double(inputY),
             "inputFrameW":   Double(inputW),
             "inputFrameH":   Double(inputH),
-            "appBundleId":   bundleId,
-            "isSecureField": isSecure,
+            "appBundleId":    bundleId,
+            "isSecureField":  isSecure,
+            "visualContext":  visualCtxCopy,
         ])
     }
 

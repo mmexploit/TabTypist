@@ -8,6 +8,7 @@ final class MenuBarController: NSObject {
     private var statusItem: NSStatusItem?
     private var currentApp: String = ""
     private var isActive: Bool = true
+    private var loadedModelLabel: String = "Loading model…"
 
     func setup() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -24,6 +25,10 @@ final class MenuBarController: NSObject {
         DispatchQueue.main.async { self.updateIcon() }
     }
 
+    func modelLoaded(tier: String, displayName: String) {
+        loadedModelLabel = "\(tier) — \(displayName)"
+    }
+
     private func updateIcon() {
         let name = isActive ? "t.square.fill" : "t.square"
         statusItem?.button?.image = NSImage(
@@ -37,6 +42,16 @@ final class MenuBarController: NSObject {
 extension MenuBarController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        // Model display at the top.
+        let modelItem = NSMenuItem(title: "Model: \(loadedModelLabel)", action: nil, keyEquivalent: "")
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+
+        let changeModelItem = NSMenuItem(title: "Change model…", action: #selector(openSettings), keyEquivalent: "")
+        changeModelItem.target = self
+        menu.addItem(changeModelItem)
+        menu.addItem(.separator())
 
         let appLabel = currentApp.isEmpty ? "No focused app" : currentApp
         let stateLabel = isActive ? "Active" : "Paused"

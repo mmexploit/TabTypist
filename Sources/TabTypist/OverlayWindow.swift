@@ -30,6 +30,11 @@ final class OverlayWindow: NSPanel {
 
     static let shared: OverlayWindow = OverlayWindow()
 
+    // Stability gate: suppress showOverlay calls for 150 ms after hide() to prevent
+    // flicker from stale AX caret positions published right after acceptance.
+    private var lastHideTime: Date = .distantPast
+    private static let stabilityGateMs: Double = 0.15
+
     private init() {
         label = NSTextField(labelWithString: "")
         label.font = NSFont.systemFont(ofSize: 14, weight: .regular)
@@ -79,11 +84,42 @@ final class OverlayWindow: NSPanel {
         return base.withAlphaComponent(ghostOpacity())
     }
 
+    // ── Keycap hint pill ──────────────────────────────────────────────────────
+
+    /// Number of accepted completions after which the hint pill is hidden permanently.
+    private static let hintThreshold = 5
+
+    static func shouldShowHint() -> Bool {
+        let count = UserDefaults.standard.integer(forKey: "completionAcceptCount")
+        return count < hintThreshold
+    }
+
+    static func recordAcceptance() {
+        let count = UserDefaults.standard.integer(forKey: "completionAcceptCount")
+        UserDefaults.standard.set(count + 1, forKey: "completionAcceptCount")
+    }
+
+    /// Build the attributed string for the keycap pill: "  Tab ⇥  " in a muted capsule.
+    private static func pillAttributedString(opacity: CGFloat, fontSize: CGFloat) -> NSAttributedString {
+        let pillFont = NSFont.monospacedSystemFont(ofSize: max(9, fontSize * 0.7), weight: .medium)
+        let label = " Tab ⇥ "
+        let pillColor = NSColor.secondaryLabelColor.withAlphaComponent(opacity * 0.9)
+        let pillBg = NSColor.labelColor.withAlphaComponent(0.08)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: pillFont,
+            .foregroundColor: pillColor,
+            .backgroundColor: pillBg,
+        ]
+        return NSAttributedString(string: label, attributes: attrs)
+    }
+
     // ── Show / hide ───────────────────────────────────────────────────────────
 
     // fontSize: AX-reported point size for the focused field (0 = unavailable, use estimate).
     func show(text: String, x: CGFloat, y: CGFloat, caretHeight: CGFloat,
               fontSize: CGFloat = 0, inputFrame: CGRect? = nil) {
+        // Stability gate: ignore show() calls in the 150 ms window after hide().
+        guard Date().timeIntervalSince(lastHideTime) >= OverlayWindow.stabilityGateMs else { return }
         // Prefer the AX-reported font size; fall back to caret-height proportion.
         let resolvedSize = fontSize > 4 ? fontSize : max(10, caretHeight * 0.75)
         let font = NSFont.systemFont(ofSize: resolvedSize, weight: .regular)
@@ -104,9 +140,14 @@ final class OverlayWindow: NSPanel {
             return safe
         }()
 
-        // Inline fit check uses the screen right edge (not field right edge) so single-line
-        // suggestions aren't prematurely wrapped in narrow fields.
-        let singleLineW = (text as NSString).size(withAttributes: [.font: font]).width + 4
+        // Inline fit check — include the hint pill width when it's showing.
+        let ghostW = (text as NSString).size(withAttributes: [.font: font]).width
+        let pillW: CGFloat = OverlayWindow.shouldShowHint()
+            ? OverlayWindow.pillAttributedString(
+                opacity: OverlayWindow.ghostOpacity(), fontSize: resolvedSize
+              ).size().width
+            : 0
+        let singleLineW = ghostW + pillW + 4
         let availableInline = max(20, safe.maxX - x)
 
         if singleLineW <= availableInline {
@@ -122,14 +163,27 @@ final class OverlayWindow: NSPanel {
         text: String, font: NSFont, caretX: CGFloat, caretY: CGFloat,
         caretHeight: CGFloat, usable: CGRect, panelW: CGFloat
     ) {
-        label.font = font
-        label.textColor = OverlayWindow.ghostTextColor()
+        let showHint = OverlayWindow.shouldShowHint()
+        let opacity = OverlayWindow.ghostOpacity()
+        let resolvedFontSize = font.pointSize
+
+        let fullAttr: NSAttributedString = {
+            let ghost = NSMutableAttributedString(string: text, attributes: [
+                .font: font,
+                .foregroundColor: OverlayWindow.ghostTextColor(),
+            ])
+            if showHint {
+                ghost.append(OverlayWindow.pillAttributedString(opacity: opacity, fontSize: resolvedFontSize))
+            }
+            return ghost
+        }()
+
         label.usesSingleLineMode = true
         label.cell?.wraps = false
         label.cell?.truncatesLastVisibleLine = false
         label.cell?.lineBreakMode = .byClipping
         label.maximumNumberOfLines = 1
-        label.stringValue = text
+        label.attributedStringValue = fullAttr
 
         // Panel height = caret height exactly so text sits on the same baseline as the
         // host app's line. Using max(textHeight, caretHeight) caused the panel to extend
@@ -164,11 +218,15 @@ final class OverlayWindow: NSPanel {
         para.lineBreakMode = .byWordWrapping
         para.lineSpacing = 0
 
-        let attrStr = NSAttributedString(string: text, attributes: [
+        let ghostBase = NSMutableAttributedString(string: text, attributes: [
             .font: font,
             .foregroundColor: OverlayWindow.ghostTextColor(),
             .paragraphStyle: para,
         ])
+        if OverlayWindow.shouldShowHint() {
+            ghostBase.append(OverlayWindow.pillAttributedString(opacity: OverlayWindow.ghostOpacity(), fontSize: font.pointSize))
+        }
+        let attrStr: NSAttributedString = ghostBase
 
         label.font = font
         label.usesSingleLineMode = false
@@ -205,6 +263,7 @@ final class OverlayWindow: NSPanel {
     }
 
     func hide() {
+        lastHideTime = Date()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.08
             animator().alphaValue = 0

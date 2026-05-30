@@ -33,7 +33,8 @@ struct ContextUpdate {
     input_frame_y:  f64,
     input_frame_w:  f64,
     input_frame_h:  f64,
-    app_bundle_id:  String,
+    app_bundle_id:   String,
+    visual_context:  String,  // OCR text from above the field; "" when unavailable
 }
 
 #[tokio::main]
@@ -81,6 +82,12 @@ async fn main() -> Result<()> {
             Ok(c) => {
                 router.lock().await.register("en", Arc::new(c));
                 info!("English model loaded");
+                transport.lock().await
+                    .send_notification("modelLoaded", serde_json::json!({
+                        "tier": en_entry.tier,
+                        "displayName": en_entry.display_name,
+                    }))
+                    .await?;
             }
             Err(e) => warn!("failed to load English model: {e}"),
         }
@@ -148,9 +155,25 @@ async fn main() -> Result<()> {
                 // Run inference on the blocking thread pool — serialised by this loop.
                 let prefix_c = update.prefix.clone();
                 let suffix_c = update.suffix.clone();
-                let max_tokens = s.completion_length.token_budget();
+                let base_budget = s.completion_length.token_budget();
+                let max_tokens = if s.multi_line_enabled {
+                    base_budget.saturating_mul(2).min(60)
+                } else {
+                    base_budget
+                };
+                let multi_line = s.multi_line_enabled;
+                let length_instruction = match s.completion_length {
+                    settings_store::CompletionLength::Short  => "Write only the next 3 to 7 words.".into(),
+                    settings_store::CompletionLength::Medium => "Write the next 7 to 12 words.".into(),
+                    settings_store::CompletionLength::Long   => "Write up to 20 words.".into(),
+                };
+                let instr_ctx = model_runtime::InstrContext {
+                    length_instruction,
+                    visual_context: update.visual_context.clone(),
+                    ..Default::default()
+                };
                 let result = tokio::task::spawn_blocking(
-                    move || completer.complete(&prefix_c, &suffix_c, max_tokens)
+                    move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)
                 ).await;
 
                 // Stale-completion guard: if the user typed during inference, the watch
@@ -328,6 +351,7 @@ async fn handle_message(
             let input_frame_h   = params["inputFrameH"].as_f64().unwrap_or(0.0);
             let app_bundle_id   = params["appBundleId"].as_str().unwrap_or("").to_string();
             let is_secure_field = params["isSecureField"].as_bool().unwrap_or(false);
+            let visual_context  = params["visualContext"].as_str().unwrap_or("").to_string();
 
             let s = settings.get();
             let verdict = exclusion.verdict(
@@ -412,6 +436,7 @@ async fn handle_message(
                 input_frame_w,
                 input_frame_h,
                 app_bundle_id,
+                visual_context,
             }));
         }
 
@@ -430,13 +455,20 @@ async fn handle_message(
         }
 
         "startModelDownload" => {
-            let lang = params["language"].as_str().unwrap_or("en").to_string();
+            let lang     = params["language"].as_str().unwrap_or("en").to_string();
+            let model_id = params["modelId"].as_str().map(|s| s.to_string());
             let transport_c  = transport.clone();
             let router_c     = router.clone();
             let downloader_c = downloader.clone();
 
             tokio::spawn(async move {
-                let entry = match ModelCatalog::default_for_language(&lang) {
+                // Prefer an explicit modelId; fall back to language default.
+                let entry = if let Some(id) = &model_id {
+                    ModelCatalog::find(id).or_else(|| ModelCatalog::default_for_language(&lang))
+                } else {
+                    ModelCatalog::default_for_language(&lang)
+                };
+                let entry = match entry {
                     Some(e) => e,
                     None => return,
                 };
@@ -478,6 +510,12 @@ async fn handle_message(
                             Ok(c) => {
                                 router_c.lock().await.register(lang.clone(), Arc::new(c));
                                 info!("model hot-loaded after download");
+                                let _ = transport_c.lock().await
+                                    .send_notification("modelLoaded", serde_json::json!({
+                                        "tier": entry.tier,
+                                        "displayName": entry.display_name,
+                                    }))
+                                    .await;
                             }
                             Err(e) => warn!("post-download model load failed: {e}"),
                         }
@@ -528,6 +566,10 @@ async fn handle_message(
                         _        => CompletionLength::Long,
                     };
                     let _ = settings.update(|s| s.completion_length = preset);
+                }
+                "multiLineEnabled" => {
+                    let enabled = params["value"].as_bool().unwrap_or(false);
+                    let _ = settings.update(|s| s.multi_line_enabled = enabled);
                 }
                 _ => warn!("unknown setting key: {key}"),
             }

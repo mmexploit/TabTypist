@@ -137,23 +137,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                 let x        = cgf(params["x"])
                 let y        = cgf(params["y"])
                 let height   = cgf(params["height"], fallback: 16)
-                let fontSize = cgf(params["fontSize"])   // 0 if unavailable
+                let fontSize = cgf(params["fontSize"])
                 let fw       = cgf(params["inputFrameW"])
                 let fh       = cgf(params["inputFrameH"])
                 let inputFrame: CGRect? = (fw > 0 && fh > 0)
                     ? CGRect(x: cgf(params["inputFrameX"]), y: cgf(params["inputFrameY"]),
                              width: fw, height: fh)
                     : nil
-                let text   = (params["text"] as? String) ?? ""
-                fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) fs=\(fontSize) field=\(inputFrame.map { "\($0)" } ?? "nil") text=\(text.prefix(40))\n", stderr)
-                OverlayWindow.shared.show(
-                    text: text, x: x, y: y, caretHeight: height,
-                    fontSize: fontSize, inputFrame: inputFrame
-                )
+                let text     = (params["text"] as? String) ?? ""
+                let bundleId = (params["appBundleId"] as? String) ?? ""
+                fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) fs=\(fontSize) text=\(text.prefix(40))\n", stderr)
+
+                if PopupCardWindow.shouldUsePopup(bundleId: bundleId, caretHeight: height),
+                   let frame = inputFrame {
+                    OverlayWindow.shared.hide()
+                    PopupCardWindow.shared.show(text: text, inputFrame: frame)
+                } else {
+                    PopupCardWindow.shared.hide()
+                    OverlayWindow.shared.show(
+                        text: text, x: x, y: y, caretHeight: height,
+                        fontSize: fontSize, inputFrame: inputFrame
+                    )
+                }
                 KeyCapture.shared.setCompletion(text)
+
+            case "acceptCompletion":
+                OverlayWindow.recordAcceptance()
 
             case "hideOverlay":
                 OverlayWindow.shared.hide()
+                PopupCardWindow.shared.hide()
                 KeyCapture.shared.clearCompletion()
 
             case "showMessagingToast":
@@ -163,6 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                     .localizedName ?? bundleId
                 ToastManager.shared.showMessagingToast(bundleId: bundleId, appName: appName)
                 MenuBarController.shared.update(appName: appName, active: true)
+
+            case "modelLoaded":
+                let tier        = (params["tier"]        as? String) ?? ""
+                let displayName = (params["displayName"] as? String) ?? ""
+                MenuBarController.shared.modelLoaded(tier: tier, displayName: displayName)
 
             case "updateMenuBar":
                 let appName = (params["appName"] as? String) ?? ""

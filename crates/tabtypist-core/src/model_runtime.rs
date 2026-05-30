@@ -7,7 +7,26 @@ use std::sync::mpsc;
 
 /// A loaded model that can produce completions.
 pub trait Completer: Send + Sync {
-    fn complete(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String>;
+    fn complete(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String> {
+        self.complete_ext(prefix, suffix, max_tokens, false)
+    }
+    fn complete_ext(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: u32,
+        multi_line: bool,
+    ) -> Result<String>;
+    fn complete_with_context(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: u32,
+        multi_line: bool,
+        _ctx: InstrContext,
+    ) -> Result<String> {
+        self.complete_ext(prefix, suffix, max_tokens, multi_line)
+    }
 }
 
 // ── Inference thread ──────────────────────────────────────────────────────────
@@ -18,19 +37,36 @@ pub trait Completer: Send + Sync {
 // lifetime problem entirely while also keeping a persistent KV cache that
 // survives across completion calls.
 
+/// Optional context injected into instruct prompts (priority order from ADR 0006).
+#[derive(Debug, Default, Clone)]
+pub struct InstrContext {
+    pub length_instruction: String,
+    pub visual_context: String,   // OCR text from screen above the field
+    pub app_name: String,
+    pub language: String,
+    pub user_name: String,
+    pub custom_rules: String,
+}
+
 struct InferRequest {
     prefix: String,
     suffix: String,
     max_tokens: u32,
+    multi_line: bool,
+    is_instruct: bool,
+    instr_ctx: InstrContext,
     reply_tx: mpsc::SyncSender<Result<String>>,
 }
 
 pub struct LlamaCppCompleter {
     request_tx: mpsc::SyncSender<InferRequest>,
+    /// True when the loaded model is an instruct-tuned model (detected from filename).
+    pub is_instruct: bool,
 }
 
 impl LlamaCppCompleter {
     pub fn load(model_path: &Path) -> Result<Self> {
+        let is_instruct = is_instruct_model(model_path);
         let (request_tx, request_rx) = mpsc::sync_channel::<InferRequest>(1);
         let model_path = model_path.to_owned();
         std::thread::spawn(move || {
@@ -38,18 +74,49 @@ impl LlamaCppCompleter {
                 tracing::error!("inference thread exited: {e}");
             }
         });
-        Ok(Self { request_tx })
+        Ok(Self { request_tx, is_instruct })
     }
 }
 
+/// Detect instruct models from common filename markers.
+fn is_instruct_model(path: &Path) -> bool {
+    let name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    name.contains("-it") || name.contains("-instruct") || name.contains("instruct")
+        || name.contains("smollm") // SmolLM2 is always instruct
+        || name.contains("-chat")
+}
+
 impl Completer for LlamaCppCompleter {
-    fn complete(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String> {
+    fn complete_ext(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: u32,
+        multi_line: bool,
+    ) -> Result<String> {
+        self.complete_with_context(prefix, suffix, max_tokens, multi_line, InstrContext::default())
+    }
+
+    fn complete_with_context(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: u32,
+        multi_line: bool,
+        instr_ctx: InstrContext,
+    ) -> Result<String> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.request_tx
             .send(InferRequest {
                 prefix: prefix.to_owned(),
                 suffix: suffix.to_owned(),
                 max_tokens,
+                multi_line,
+                is_instruct: self.is_instruct,
+                instr_ctx,
                 reply_tx,
             })
             .context("inference thread disconnected")?;
@@ -82,9 +149,16 @@ fn inference_thread(rx: mpsc::Receiver<InferRequest>, model_path: PathBuf) -> Re
             prefix,
             suffix,
             max_tokens,
+            multi_line,
+            is_instruct,
+            instr_ctx,
             reply_tx,
         } = req;
-        let result = do_complete(&model, &mut ctx, &mut kv_tokens, &prefix, &suffix, max_tokens);
+        let result = if is_instruct {
+            do_complete_instruct(&model, &mut ctx, &mut kv_tokens, &prefix, max_tokens, multi_line, &instr_ctx)
+        } else {
+            do_complete(&model, &mut ctx, &mut kv_tokens, &prefix, &suffix, max_tokens, multi_line)
+        };
         let _ = reply_tx.send(result);
     }
     Ok(())
@@ -99,6 +173,7 @@ fn do_complete(
     prefix: &str,
     suffix: &str,
     max_tokens: u32,
+    multi_line: bool,
 ) -> Result<String> {
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::AddBos;
@@ -180,7 +255,9 @@ fn do_complete(
         let piece = model.token_to_piece(token, &mut decoder, false, None)?;
         if !piece.is_empty() {
             result.push_str(&piece);
-            if ends_at_sentence_boundary(&result) {
+            if multi_line {
+                if result.contains("\n\n") { break; }
+            } else if ends_at_sentence_boundary(&result) {
                 break;
             }
         }
@@ -200,12 +277,141 @@ fn do_complete(
 
     let normalized = normalize_completion(result, prefix);
     tracing::debug!(
-        "completion kv_hit={} cached={} normalized_len={}",
+        "completion kv_hit={} cached={} multi_line={} normalized_len={}",
         can_extend,
         kv_tokens.len(),
+        multi_line,
         normalized.len()
     );
-    Ok(truncate_at_sentence_boundary(normalized))
+    Ok(if multi_line {
+        truncate_at_blank_line(normalized)
+    } else {
+        truncate_at_sentence_boundary(normalized)
+    })
+}
+
+// ── Instruct inference path ───────────────────────────────────────────────────
+
+fn do_complete_instruct(
+    model: &llama_cpp_2::model::LlamaModel,
+    ctx: &mut llama_cpp_2::context::LlamaContext,
+    kv_tokens: &mut Vec<LlamaToken>,
+    prefix: &str,
+    max_tokens: u32,
+    multi_line: bool,
+    instr_ctx: &InstrContext,
+) -> Result<String> {
+    use llama_cpp_2::llama_batch::LlamaBatch;
+    use llama_cpp_2::model::{AddBos, LlamaChatMessage};
+    use llama_cpp_2::sampling::LlamaSampler;
+
+    // Build the system prompt from the context budget (ADR 0006: 1 000 chars).
+    let mut system_parts: Vec<String> = Vec::new();
+    let length_hint = if !instr_ctx.length_instruction.is_empty() {
+        instr_ctx.length_instruction.clone()
+    } else {
+        format!("Write a completion of up to {} tokens.", max_tokens)
+    };
+    system_parts.push(format!("Complete the user's text. {length_hint}"));
+    if !instr_ctx.visual_context.is_empty() {
+        system_parts.push(format!("For context, here is what is visible above the text field: {}", instr_ctx.visual_context));
+    }
+    if !instr_ctx.app_name.is_empty() {
+        system_parts.push(format!("The user is typing in {}.", instr_ctx.app_name));
+    }
+    if !instr_ctx.language.is_empty() {
+        system_parts.push(format!("The user is writing in {}.", instr_ctx.language));
+    }
+    if !instr_ctx.user_name.is_empty() {
+        system_parts.push(format!("The user's name is {}.", instr_ctx.user_name));
+    }
+    if !instr_ctx.custom_rules.is_empty() {
+        system_parts.push(format!("Additional instructions: {}", instr_ctx.custom_rules));
+    }
+    system_parts.push("Output ONLY the continuation text — no quotes, no explanation.".into());
+    let system = system_parts.join(" ");
+
+    // Apply the model's built-in chat template; fall back to ChatML if none is embedded.
+    let tmpl = model.chat_template(None)
+        .unwrap_or_else(|_| llama_cpp_2::model::LlamaChatTemplate::new("chatml").unwrap());
+
+    let messages = vec![
+        LlamaChatMessage::new("system".into(), system).context("building system message")?,
+        LlamaChatMessage::new("user".into(), prefix.to_string()).context("building user message")?,
+    ];
+    let prompt = model.apply_chat_template(&tmpl, &messages, true)
+        .context("applying chat template")?;
+
+    // Tokenise the full prompt.
+    let new_tokens = model.str_to_token(&prompt, AddBos::Always)
+        .context("tokenizing instruct prompt")?;
+
+    // KV cache: instruct prompts diverge on every call (prefix changes); always full re-prefill.
+    ctx.clear_kv_cache();
+    kv_tokens.clear();
+
+    let max_ctx = N_CTX as usize - max_tokens as usize - 4;
+    let tokens: Vec<LlamaToken> = if new_tokens.len() > max_ctx {
+        new_tokens[new_tokens.len() - max_ctx..].to_vec()
+    } else {
+        new_tokens
+    };
+
+    let last_idx = tokens.len().saturating_sub(1);
+    let mut batch = LlamaBatch::new(tokens.len().max(512), 1);
+    for (i, &tok) in tokens.iter().enumerate() {
+        batch.add(tok, i as i32, &[0], i == last_idx)?;
+    }
+    ctx.decode(&mut batch).context("instruct prefill")?;
+
+    let fim_pad_id = resolve_token(model, "<|fim_pad|>");
+    let endoftext_id = resolve_token(model, "<|endoftext|>");
+
+    let mut sampler = LlamaSampler::chain_simple([
+        LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+        LlamaSampler::temp(0.2), // slightly more creative than base path
+        LlamaSampler::min_p(0.05, 1),
+        LlamaSampler::greedy(),
+    ]);
+
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
+    let mut result = String::new();
+    let mut pos = tokens.len() as i32;
+
+    let mut token = sampler.sample(ctx, last_idx as i32);
+    sampler.accept(token);
+
+    for _ in 0..max_tokens {
+        if token == model.token_eos() { break; }
+        if fim_pad_id.map_or(false, |id| token == id) { break; }
+        if endoftext_id.map_or(false, |id| token == id) { break; }
+
+        let piece = model.token_to_piece(token, &mut decoder, false, None)?;
+        if !piece.is_empty() {
+            result.push_str(&piece);
+            if multi_line {
+                if result.contains("\n\n") { break; }
+            } else if ends_at_sentence_boundary(&result) {
+                break;
+            }
+        }
+
+        let mut next = LlamaBatch::new(1, 1);
+        next.add(token, pos, &[0], true)?;
+        ctx.decode(&mut next).context("instruct autoregressive decode")?;
+        pos += 1;
+
+        token = sampler.sample(ctx, 0);
+        sampler.accept(token);
+    }
+
+    let normalized = normalize_completion(result, prefix);
+    tracing::debug!("instruct completion len={}", normalized.len());
+    Ok(if multi_line {
+        truncate_at_blank_line(normalized)
+    } else {
+        truncate_at_sentence_boundary(normalized)
+    })
 }
 
 // ── Token stream construction ─────────────────────────────────────────────────
@@ -291,6 +497,22 @@ fn ends_at_sentence_boundary(text: &str) -> bool {
 pub fn truncate_at_sentence_boundary(mut text: String) -> String {
     if let Some(pos) = text.find(|c| matches!(c, '.' | '!' | '?' | '\n')) {
         text.truncate(pos + 1);
+    }
+    text.trim_end().to_string()
+}
+
+/// Multi-line variant: allow single newlines but stop at the first blank line (`\n\n`).
+pub fn truncate_at_blank_line(mut text: String) -> String {
+    if let Some(pos) = text.find("\n\n") {
+        text.truncate(pos);
+    }
+    // Still truncate at other hard boundaries.
+    if let Some(pos) = text.find(|c| matches!(c, '.' | '!' | '?')) {
+        // Only truncate if the boundary appears before any newline in the result.
+        let first_nl = text.find('\n').unwrap_or(text.len());
+        if pos < first_nl {
+            text.truncate(pos + 1);
+        }
     }
     text.trim_end().to_string()
 }
@@ -413,7 +635,7 @@ pub struct StubCompleter {
 
 #[cfg(test)]
 impl Completer for StubCompleter {
-    fn complete(&self, _prefix: &str, _suffix: &str, _max_tokens: u32) -> Result<String> {
+    fn complete_ext(&self, _prefix: &str, _suffix: &str, _max_tokens: u32, _multi_line: bool) -> Result<String> {
         Ok(self.response.clone())
     }
 }
@@ -438,6 +660,20 @@ mod tests {
     fn truncate_no_boundary() {
         let s = "no sentence end here".to_string();
         assert_eq!(truncate_at_sentence_boundary(s), "no sentence end here");
+    }
+
+    // ── truncate_at_blank_line ────────────────────────────────────────────────
+
+    #[test]
+    fn blank_line_truncates_at_double_newline() {
+        let s = "line one\nline two\n\nline three".to_string();
+        assert_eq!(truncate_at_blank_line(s), "line one\nline two");
+    }
+
+    #[test]
+    fn blank_line_single_newline_passes_through() {
+        let s = "line one\nline two".to_string();
+        assert_eq!(truncate_at_blank_line(s), "line one\nline two");
     }
 
     // ── normalize_completion ──────────────────────────────────────────────────

@@ -62,6 +62,11 @@ pub struct Settings {
     /// Completion length preset; controls how many tokens the core generates.
     #[serde(default)]
     pub completion_length: CompletionLength,
+
+    /// Allow completions to span multiple paragraphs (stops at blank line, not single \n).
+    /// Token budget doubles (capped at 60) when enabled.
+    #[serde(default)]
+    pub multi_line_enabled: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +83,7 @@ impl Default for Settings {
             onboarding_phase: 0,
             input_monitoring_granted: false,
             completion_length: CompletionLength::Long,
+            multi_line_enabled: false,
         }
     }
 }
@@ -272,6 +278,21 @@ mod tests {
     #[test]
     fn completion_length_default_is_long() {
         assert_eq!(Settings::default().completion_length, CompletionLength::Long);
+    }
+
+    #[test]
+    fn multi_line_default_is_off() {
+        assert!(!Settings::default().multi_line_enabled);
+    }
+
+    #[test]
+    fn multi_line_budget_doubling_capped_at_60() {
+        use super::CompletionLength;
+        let budget = CompletionLength::Long.token_budget(); // 30
+        let multi = budget.saturating_mul(2).min(60);
+        assert_eq!(multi, 60);
+        let over = 40_u32.saturating_mul(2).min(60);
+        assert_eq!(over, 60); // capped
     }
 
     #[test]

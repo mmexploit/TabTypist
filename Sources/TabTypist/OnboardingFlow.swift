@@ -2,11 +2,54 @@ import AppKit
 import ApplicationServices
 import Combine
 import SwiftUI
+import Darwin  // for sysctlbyname
 
 // ── Shared state across onboarding steps ─────────────────────────────────────
 
+// Mirrors the Rust ModelCatalog so the tier picker can display without IPC.
+struct ModelTierInfo: Identifiable {
+    let id: String
+    let tier: String
+    let displayName: String
+    let sizeGB: Double
+    let minRAMGB: Int
+    let isInstruct: Bool
+
+    static let catalog: [ModelTierInfo] = [
+        ModelTierInfo(id: "smollm2-135m-instruct-q8",  tier: "nano",        displayName: "SmolLM2 135M",    sizeGB: 0.14, minRAMGB: 0,  isInstruct: true),
+        ModelTierInfo(id: "qwen3-0.6b-q4km",           tier: "mini",        displayName: "Qwen3 0.6B",      sizeGB: 0.41, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen3-1.7b-q4km",           tier: "standard",    displayName: "Qwen3 1.7B",      sizeGB: 1.08, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen3-4b-q4km",             tier: "performance", displayName: "Qwen3 4B",        sizeGB: 2.42, minRAMGB: 16, isInstruct: false),
+        ModelTierInfo(id: "gemma4-e2b-it-q4km",        tier: "quality",     displayName: "Gemma 3n E2B",    sizeGB: 3.30, minRAMGB: 16, isInstruct: true),
+        ModelTierInfo(id: "gemma4-e4b-it-q4km",        tier: "pro",         displayName: "Gemma 3n E4B",    sizeGB: 5.30, minRAMGB: 24, isInstruct: true),
+    ]
+
+    var sizeLabel: String { String(format: "%.1f GB", sizeGB) }
+    var ramLabel: String  { minRAMGB == 0 ? "Any Mac" : "\(minRAMGB) GB+ RAM" }
+}
+
+func detectPhysicalRAMGB() -> Int {
+    var size: UInt64 = 0
+    var sizeLen = MemoryLayout<UInt64>.size
+    sysctlbyname("hw.memsize", &size, &sizeLen, nil, 0)
+    return Int(size / (1024 * 1024 * 1024))
+}
+
+func recommendedTier(ramGB: Int) -> String {
+    if ramGB >= 24 { return "pro" }
+    if ramGB >= 16 { return "quality" }
+    if ramGB >= 8  { return "standard" }
+    return "nano"
+}
+
 final class OnboardingState: ObservableObject {
     @Published var selectedLanguages: Set<String> = ["en"]
+    @Published var selectedTierId: String = {
+        let ram = detectPhysicalRAMGB()
+        let tier = recommendedTier(ramGB: ram)
+        return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id
+            ?? "qwen3-1.7b-q4km"
+    }()
 
     // Download state
     @Published var downloadedBytes: Int64 = 0
@@ -226,9 +269,12 @@ struct OnboardingView: View {
     }
 
     private func startDownload() {
-        let lang = state.selectedLanguages.first ?? "en"
+        let modelId = state.selectedTierId
         state.downloadPhase = .downloading
-        IPCBridge.shared.notify(method: "startModelDownload", params: ["language": lang])
+        IPCBridge.shared.notify(method: "startModelDownload", params: [
+            "language": "en",
+            "modelId": modelId,
+        ])
     }
 
     private func finish() {
@@ -423,28 +469,66 @@ struct AccessibilityStep: View {
 struct ModelDownloadStep: View {
     @ObservedObject var state: OnboardingState
 
+    private let ramGB = detectPhysicalRAMGB()
+    private var recommendedId: String {
+        let tier = recommendedTier(ramGB: ramGB)
+        return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id ?? "qwen3-1.7b-q4km"
+    }
+
     var body: some View {
-        VStack(spacing: 24) {
-            downloadIcon
-                .animation(.spring, value: iconName)
+        if state.downloadPhase == .idle {
+            tierPicker
+        } else {
+            downloadProgress
+        }
+    }
 
-            VStack(spacing: 8) {
-                Text(titleText)
-                    .font(.title2.bold())
-                    .animation(.default, value: titleText)
-                Text("Qwen 2.5 1.5B (4-bit) · ~900 MB\nRuns entirely on your Mac after download.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 400)
+    private var tierPicker: some View {
+        VStack(spacing: 16) {
+            Text("Choose Your Model")
+                .font(.title2.bold())
+            Text("Your Mac has \(ramGB) GB RAM.  Recommended tier is highlighted.")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(ModelTierInfo.catalog) { tier in
+                        TierRow(
+                            tier: tier,
+                            isSelected: state.selectedTierId == tier.id,
+                            isRecommended: tier.id == recommendedId
+                        ) {
+                            state.selectedTierId = tier.id
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
             }
+            .frame(maxHeight: 260)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 20)
+        .onReceive(NotificationCenter.default.publisher(for: .downloadProgressUpdated)) { note in
+            handleProgressNote(note)
+        }
+    }
 
+    private var downloadProgress: some View {
+        VStack(spacing: 24) {
+            downloadIcon.animation(.spring, value: iconName)
+            VStack(spacing: 8) {
+                Text(titleText).font(.title2.bold()).animation(.default, value: titleText)
+                let tierName = ModelTierInfo.catalog.first(where: { $0.id == state.selectedTierId })
+                    .map { "\($0.displayName) · \($0.sizeLabel)" } ?? ""
+                Text("\(tierName)\nRuns entirely on your Mac.")
+                    .multilineTextAlignment(.center).foregroundStyle(.secondary).frame(maxWidth: 400)
+            }
             downloadProgressView
         }
-        .padding(.horizontal, 40)
-        .padding(.vertical, 32)
-        .onReceive(
-            NotificationCenter.default.publisher(for: .downloadProgressUpdated)
-        ) { note in
+        .padding(.horizontal, 40).padding(.vertical, 32)
+        .onReceive(NotificationCenter.default.publisher(for: .downloadProgressUpdated)) { note in
             handleProgressNote(note)
         }
     }
@@ -578,6 +662,52 @@ struct ModelDownloadStep: View {
             state.totalBytes = total
             state.downloadPhase = fraction >= 1.0 ? .complete : .downloading
         }
+    }
+}
+
+struct TierRow: View {
+    let tier: ModelTierInfo
+    let isSelected: Bool
+    let isRecommended: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(tier.displayName).font(.body.weight(.medium))
+                        Text("(\(tier.tier))").font(.caption).foregroundStyle(.secondary)
+                        if isRecommended {
+                            Text("Recommended")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.accentColor.opacity(0.15), in: Capsule())
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Text(tier.sizeLabel).font(.caption).foregroundStyle(.secondary)
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(tier.ramLabel).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(isSelected ? Color.accentColor.opacity(0.4) : .clear, lineWidth: 1.5)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
