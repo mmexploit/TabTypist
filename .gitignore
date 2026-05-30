@@ -6,3 +6,4 @@ dist/
 *.swp
 .DS_Store
 *.
+.competitor-analysis/

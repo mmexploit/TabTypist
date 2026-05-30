@@ -17,4 +17,4 @@ TabTypist's roadmap requires both macOS (v1) and Windows-low-end (v1.5+) to be r
 - v1 uses **llama.cpp linked into Rust** via `llama-cpp-2`. MLX is deferred to a later optimization once the architecture is stable — running MLX in a Swift sidecar over IPC would defeat its latency advantage.
 - A Rust↔Swift FFI boundary exists from day one (UniFFI or hand-rolled C FFI). The AX integration on macOS lives in a small Swift module exposing `focusedField → (text, caretRect)` and capturing Tab/Escape; Rust drives orchestration.
 - v1 ships ~30% slower decode on Apple Silicon than a hypothetical native Swift + MLX version (Qwen 2.5 1.5B 4-bit on Metal-backed llama.cpp: ~80 tok/s on M2; ~310ms for a 25-token completion). Inside the acceptable latency band but visibly less "instant" than MLX would be. Accepted as a v1 trade.
-- The macOS app will not be as native-feeling as a pure-Swift competitor (e.g., cotabby) on subtle details. The trade is that Windows is reachable.
+- The macOS app will not be as native-feeling as a pure-Swift competitor (e.g., ) on subtle details. The trade is that Windows is reachable.
