@@ -41,7 +41,8 @@ pub trait Completer: Send + Sync {
 #[derive(Debug, Default, Clone)]
 pub struct InstrContext {
     pub length_instruction: String,
-    pub visual_context: String,   // OCR text from screen above the field
+    pub visual_context: String,    // OCR text from screen above the field
+    pub clipboard_context: String, // opt-in clipboard text
     pub app_name: String,
     pub language: String,
     pub user_name: String,
@@ -315,6 +316,11 @@ fn do_complete_instruct(
     system_parts.push(format!("Complete the user's text. {length_hint}"));
     if !instr_ctx.visual_context.is_empty() {
         system_parts.push(format!("For context, here is what is visible above the text field: {}", instr_ctx.visual_context));
+    }
+    if !instr_ctx.clipboard_context.is_empty() {
+        let clip = &instr_ctx.clipboard_context;
+        let tail = if clip.len() > 200 { &clip[clip.len()-200..] } else { clip.as_str() };
+        system_parts.push(format!("The user's clipboard contains: {tail}"));
     }
     if !instr_ctx.app_name.is_empty() {
         system_parts.push(format!("The user is typing in {}.", instr_ctx.app_name));

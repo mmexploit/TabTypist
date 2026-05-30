@@ -390,20 +390,30 @@ final class AXMonitor: @unchecked Sendable {
         // caretHeight=0 means AX couldn't determine caret bounds (Electron, terminal, etc.).
         // Cast CGFloat → Double explicitly: AnyCodable only encodes Double,
         // not CGFloat (a distinct Swift struct), so CGFloat values serialize as null.
+        let appDisplayName = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == bundleId })?
+            .localizedName ?? bundleId
+        var clipboardContext = ""
+        if UserDefaults.standard.bool(forKey: "clipboardContextEnabled") {
+            let clip = NSPasteboard.general.string(forType: .string) ?? ""
+            clipboardContext = clip.count > 200 ? String(clip.suffix(200)) : clip
+        }
         IPCBridge.shared.notify(method: "contextUpdate", params: [
-            "prefix":        prefix,
-            "suffix":        suffix,
-            "caretX":        Double(caretX),
-            "caretY":        Double(screenY),
-            "caretHeight":   Double(caretRect.height),   // 0 = no valid caret bounds
-            "fontSize":      Double(axFontSize),          // 0 = unavailable
-            "inputFrameX":   Double(inputX),
-            "inputFrameY":   Double(inputY),
-            "inputFrameW":   Double(inputW),
-            "inputFrameH":   Double(inputH),
-            "appBundleId":    bundleId,
-            "isSecureField":  isSecure,
-            "visualContext":  visualCtxCopy,
+            "prefix":           prefix,
+            "suffix":           suffix,
+            "caretX":           Double(caretX),
+            "caretY":           Double(screenY),
+            "caretHeight":      Double(caretRect.height),  // 0 = no valid caret bounds
+            "fontSize":         Double(axFontSize),         // 0 = unavailable
+            "inputFrameX":      Double(inputX),
+            "inputFrameY":      Double(inputY),
+            "inputFrameW":      Double(inputW),
+            "inputFrameH":      Double(inputH),
+            "appBundleId":      bundleId,
+            "appDisplayName":   appDisplayName,
+            "isSecureField":    isSecure,
+            "visualContext":    visualCtxCopy,
+            "clipboardContext": clipboardContext,
         ])
     }
 

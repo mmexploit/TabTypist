@@ -67,6 +67,22 @@ pub struct Settings {
     /// Token budget doubles (capped at 60) when enabled.
     #[serde(default)]
     pub multi_line_enabled: bool,
+
+    /// Display name of the user (included in instruct-model personalisation prompts).
+    #[serde(default)]
+    pub user_name: String,
+
+    /// Free-form writing rules applied globally across all apps.
+    #[serde(default)]
+    pub custom_rules_global: String,
+
+    /// Per-app writing rules: bundle ID → rule text.
+    #[serde(default)]
+    pub custom_rules_per_app: HashMap<String, String>,
+
+    /// When true, the current clipboard text is included in the instruct context window.
+    #[serde(default)]
+    pub clipboard_context_enabled: bool,
 }
 
 impl Default for Settings {
@@ -84,6 +100,10 @@ impl Default for Settings {
             input_monitoring_granted: false,
             completion_length: CompletionLength::Long,
             multi_line_enabled: false,
+            user_name: String::new(),
+            custom_rules_global: String::new(),
+            custom_rules_per_app: HashMap::new(),
+            clipboard_context_enabled: false,
         }
     }
 }

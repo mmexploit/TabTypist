@@ -5,12 +5,13 @@ mod model_downloader;
 mod model_runtime;
 mod settings_store;
 mod telemetry;
+mod vocab_store;
 
 use anyhow::{Context, Result};
 use exclusion_engine::ExclusionEngine;
 use ipc::{IpcTransport, RpcMessage};
 use language_router::LanguageRouter;
-use model_downloader::{ModelCatalog, ModelDownloader};
+use model_downloader::{ModelCatalog, ModelDownloader, ModelEntry, ModelKind};
 use settings_store::SettingsStore;
 use std::sync::Arc;
 use telemetry::{TelemetryClient, TelemetryEvent};
@@ -23,18 +24,20 @@ use tracing::{info, warn};
 /// Payload broadcast through the debounce channel on every contextUpdate.
 #[derive(Clone, Debug)]
 struct ContextUpdate {
-    prefix:         String,
-    suffix:         String,
-    caret_x:        f64,
-    caret_y:        f64,
-    caret_height:   f64,
-    font_size:      f64,   // AX-reported point size; 0 = unavailable
-    input_frame_x:  f64,
-    input_frame_y:  f64,
-    input_frame_w:  f64,
-    input_frame_h:  f64,
-    app_bundle_id:   String,
-    visual_context:  String,  // OCR text from above the field; "" when unavailable
+    prefix:            String,
+    suffix:            String,
+    caret_x:           f64,
+    caret_y:           f64,
+    caret_height:      f64,
+    font_size:         f64,
+    input_frame_x:     f64,
+    input_frame_y:     f64,
+    input_frame_w:     f64,
+    input_frame_h:     f64,
+    app_bundle_id:     String,
+    app_display_name:  String, // NSRunningApplication.localizedName
+    visual_context:    String, // OCR text from above the field; "" when unavailable
+    clipboard_context: String, // clipboard text when user has opted in; "" otherwise
 }
 
 #[tokio::main]
@@ -101,8 +104,12 @@ async fn main() -> Result<()> {
         settings.get().telemetry_enabled,
     );
 
-    // true = a completion is pending acceptance/dismissal (gates telemetry events).
-    let current_completion: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let vocab = Arc::new(
+        vocab_store::VocabStore::load(&model_downloader::models_dir().unwrap_or_default())
+    );
+
+    // None = no completion pending; Some(text) = pending text (gates telemetry + vocab record).
+    let current_completion: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // Single watch channel for context updates.
     // The debounce task reads from here; handle_message writes to it.
@@ -121,6 +128,7 @@ async fn main() -> Result<()> {
         let current_inf   = current_completion.clone();
         let router_inf    = router.clone();
         let settings_inf  = settings.clone();
+        let vocab_inf     = vocab.clone();
 
         tokio::spawn(async move {
             'outer: loop {
@@ -128,12 +136,10 @@ async fn main() -> Result<()> {
                 if rx.changed().await.is_err() { break; }
 
                 // Debounce: restart the timer on every additional update.
-                // 250 ms balances responsiveness against firing on every keystroke.
                 'debounce: loop {
                     tokio::select! {
                         result = rx.changed() => {
                             if result.is_err() { break 'outer; }
-                            // New update — restart the timer.
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(75)) => {
                             break 'debounce;
@@ -152,7 +158,6 @@ async fn main() -> Result<()> {
                     None    => continue,
                 };
 
-                // Run inference on the blocking thread pool — serialised by this loop.
                 let prefix_c = update.prefix.clone();
                 let suffix_c = update.suffix.clone();
                 let base_budget = s.completion_length.token_budget();
@@ -167,19 +172,43 @@ async fn main() -> Result<()> {
                     settings_store::CompletionLength::Medium => "Write the next 7 to 12 words.".into(),
                     settings_store::CompletionLength::Long   => "Write up to 20 words.".into(),
                 };
+
+                // Build full context for instruct-model personalisation.
+                let clipboard_c = if s.clipboard_context_enabled {
+                    update.clipboard_context.clone()
+                } else {
+                    String::new()
+                };
+                let mut custom_rules = s.custom_rules_global.clone();
+                if let Some(app_rules) = s.custom_rules_per_app.get(&update.app_bundle_id) {
+                    if !app_rules.is_empty() {
+                        if !custom_rules.is_empty() { custom_rules.push('\n'); }
+                        custom_rules.push_str(app_rules);
+                    }
+                }
+                let top_words = vocab_inf.top_words(20);
+                if !top_words.is_empty() {
+                    if !custom_rules.is_empty() { custom_rules.push('\n'); }
+                    custom_rules.push_str(&format!("Personal vocabulary: {}", top_words.join(", ")));
+                }
+
                 let instr_ctx = model_runtime::InstrContext {
                     length_instruction,
-                    visual_context: update.visual_context.clone(),
-                    ..Default::default()
+                    visual_context:    update.visual_context.clone(),
+                    clipboard_context: clipboard_c,
+                    app_name:          update.app_display_name.clone(),
+                    language:          detect_language(&update.prefix),
+                    user_name:         s.user_name.clone(),
+                    custom_rules,
                 };
+
                 let result = tokio::task::spawn_blocking(
                     move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)
                 ).await;
 
                 // Stale-completion guard: if the user typed during inference, the watch
-                // channel now holds a newer prefix.  calls this "workID drift" —
-                // showing the result for an old prefix would paint ghost text at a caret
-                // position the user has already moved past, overlapping live typed text.
+                // channel now holds a newer prefix.  Showing a result for an old prefix
+                // would paint ghost text at a position the user has already moved past.
                 let latest_prefix = rx.borrow().as_ref().map(|u| u.prefix.clone());
                 if latest_prefix.as_deref() != Some(update.prefix.as_str()) {
                     info!("discarding stale completion (prefix advanced during inference)");
@@ -193,11 +222,11 @@ async fn main() -> Result<()> {
                             info!("completion empty after truncation — suppressing overlay");
                             continue;
                         }
-                        *current_inf.lock().await = true;
+                        *current_inf.lock().await = Some(text.clone());
 
-                        // caret_height == 0 means AX couldn't determine caret position
-                        // (Electron / terminal apps) — store the completion but skip the overlay.
-                        if update.caret_height > 0.0 {
+                        // Show overlay when caret bounds are known (standard) or when
+                        // the input frame is known (Electron / popup-card mode).
+                        if update.caret_height > 0.0 || update.input_frame_w > 0.0 {
                             info!("showOverlay text={:?}", text);
                             let _ = transport_inf.lock().await
                                 .send_notification("showOverlay", serde_json::json!({
@@ -209,11 +238,12 @@ async fn main() -> Result<()> {
                                     "inputFrameY": update.input_frame_y,
                                     "inputFrameW": update.input_frame_w,
                                     "inputFrameH": update.input_frame_h,
+                                    "appBundleId": update.app_bundle_id,
                                     "text":        text,
                                 }))
                                 .await;
                         } else {
-                            info!("completion ready (no overlay — caret bounds unavailable): {:?}", text);
+                            info!("completion ready (no overlay — caret+frame unavailable): {:?}", text);
                         }
                     }
                     Ok(Ok(_))  => info!("completion returned empty string"),
@@ -253,6 +283,7 @@ async fn main() -> Result<()> {
             &transport,
             &telemetry,
             &downloader,
+            &vocab,
         )
         .await;
     }
@@ -262,6 +293,56 @@ async fn main() -> Result<()> {
 
 fn should_trigger_completion(prefix: &str) -> bool {
     !prefix.trim().is_empty()
+}
+
+/// Detect dominant non-Latin script in the last 200 chars of `prefix`.
+/// Returns a human-readable language name for the instruct prompt, or "" for English.
+fn detect_language(prefix: &str) -> String {
+    let sample: String = prefix.chars().rev().take(200).collect::<String>()
+        .chars().rev().collect();
+
+    let mut ethiopic   = 0u32;
+    let mut arabic     = 0u32;
+    let mut cjk        = 0u32;
+    let mut japanese   = 0u32;
+    let mut hangul     = 0u32;
+    let mut cyrillic   = 0u32;
+    let mut hebrew     = 0u32;
+    let mut thai       = 0u32;
+    let mut devanagari = 0u32;
+
+    for c in sample.chars() {
+        let v = c as u32;
+        match v {
+            0x1200..=0x137F => ethiopic   += 1,
+            0x0600..=0x06FF => arabic     += 1,
+            0x4E00..=0x9FFF => cjk        += 1,
+            0x3040..=0x30FF => japanese   += 1,
+            0xAC00..=0xD7FF => hangul     += 1,
+            0x0400..=0x04FF => cyrillic   += 1,
+            0x0590..=0x05FF => hebrew     += 1,
+            0x0E00..=0x0E7F => thai       += 1,
+            0x0900..=0x097F => devanagari += 1,
+            _ => {}
+        }
+    }
+
+    let counts = [ethiopic, arabic, cjk, japanese, hangul, cyrillic, hebrew, thai, devanagari];
+    let max_count = counts.iter().copied().max().unwrap_or(0);
+    if max_count < 2 { return String::new(); }
+
+    match counts.iter().position(|&c| c == max_count) {
+        Some(0) => "Amharic".into(),
+        Some(1) => "Arabic".into(),
+        Some(2) => "Chinese".into(),
+        Some(3) => "Japanese".into(),
+        Some(4) => "Korean".into(),
+        Some(5) => "Russian".into(),
+        Some(6) => "Hebrew".into(),
+        Some(7) => "Thai".into(),
+        Some(8) => "Hindi".into(),
+        _ => String::new(),
+    }
 }
 
 /// True when the last line of `prefix` ends with a recognised shell-prompt suffix.
@@ -319,11 +400,12 @@ async fn handle_message(
     settings: &SettingsStore,
     exclusion: &ExclusionEngine,
     router: &Arc<Mutex<LanguageRouter>>,
-    current_completion: &Arc<Mutex<bool>>,
+    current_completion: &Arc<Mutex<Option<String>>>,
     ctx_tx: &Arc<tokio::sync::watch::Sender<Option<ContextUpdate>>>,
     transport: &Arc<Mutex<IpcTransport>>,
     telemetry: &TelemetryClient,
     downloader: &Arc<ModelDownloader>,
+    vocab: &Arc<vocab_store::VocabStore>,
 ) {
     let method = msg.method.as_deref().unwrap_or("");
     let params = msg.params.as_ref().cloned().unwrap_or(serde_json::json!({}));
@@ -349,9 +431,11 @@ async fn handle_message(
             let input_frame_y   = params["inputFrameY"].as_f64().unwrap_or(0.0);
             let input_frame_w   = params["inputFrameW"].as_f64().unwrap_or(0.0);
             let input_frame_h   = params["inputFrameH"].as_f64().unwrap_or(0.0);
-            let app_bundle_id   = params["appBundleId"].as_str().unwrap_or("").to_string();
-            let is_secure_field = params["isSecureField"].as_bool().unwrap_or(false);
-            let visual_context  = params["visualContext"].as_str().unwrap_or("").to_string();
+            let app_bundle_id    = params["appBundleId"].as_str().unwrap_or("").to_string();
+            let app_display_name = params["appDisplayName"].as_str().unwrap_or("").to_string();
+            let is_secure_field  = params["isSecureField"].as_bool().unwrap_or(false);
+            let visual_context   = params["visualContext"].as_str().unwrap_or("").to_string();
+            let clipboard_context = params["clipboardContext"].as_str().unwrap_or("").to_string();
 
             let s = settings.get();
             let verdict = exclusion.verdict(
@@ -436,34 +520,53 @@ async fn handle_message(
                 input_frame_w,
                 input_frame_h,
                 app_bundle_id,
+                app_display_name,
                 visual_context,
+                clipboard_context,
             }));
         }
 
         "acceptCompletion" => {
-            let was_pending = std::mem::replace(&mut *current_completion.lock().await, false);
-            if was_pending {
+            let prev = std::mem::replace(&mut *current_completion.lock().await, None);
+            if let Some(text) = prev {
                 telemetry.record(TelemetryEvent::CompletionAccepted { model_id: "qwen2.5-1.5b-base-q4".into() });
+                vocab.record(&text);
             }
         }
 
         "dismissCompletion" => {
-            let was_pending = std::mem::replace(&mut *current_completion.lock().await, false);
+            let was_pending = std::mem::replace(&mut *current_completion.lock().await, None).is_some();
             if was_pending {
                 telemetry.record(TelemetryEvent::CompletionDismissed { model_id: "qwen2.5-1.5b-base-q4".into() });
             }
         }
 
         "startModelDownload" => {
-            let lang     = params["language"].as_str().unwrap_or("en").to_string();
-            let model_id = params["modelId"].as_str().map(|s| s.to_string());
+            let lang       = params["language"].as_str().unwrap_or("en").to_string();
+            let model_id   = params["modelId"].as_str().map(|s| s.to_string());
+            let custom_url = params["customUrl"].as_str().map(|s| s.to_string());
             let transport_c  = transport.clone();
             let router_c     = router.clone();
             let downloader_c = downloader.clone();
 
             tokio::spawn(async move {
-                // Prefer an explicit modelId; fall back to language default.
-                let entry = if let Some(id) = &model_id {
+                // Priority: explicit customUrl > modelId > language default.
+                let entry = if let Some(url) = custom_url {
+                    let filename = url.split('/').last().unwrap_or("custom-model").to_string();
+                    let id = format!("custom-{}", filename.replace('.', "-"));
+                    Some(ModelEntry {
+                        id,
+                        display_name: filename,
+                        language: lang.clone(),
+                        tier: "custom".to_string(),
+                        model_kind: ModelKind::Instruct,
+                        min_ram_gb: 0,
+                        url,
+                        size_bytes: 0,
+                        sha256: "placeholder_custom".to_string(),
+                        ed25519_signature: "placeholder_custom".to_string(),
+                    })
+                } else if let Some(id) = &model_id {
                     ModelCatalog::find(id).or_else(|| ModelCatalog::default_for_language(&lang))
                 } else {
                     ModelCatalog::default_for_language(&lang)
@@ -570,6 +673,31 @@ async fn handle_message(
                 "multiLineEnabled" => {
                     let enabled = params["value"].as_bool().unwrap_or(false);
                     let _ = settings.update(|s| s.multi_line_enabled = enabled);
+                }
+                "userName" => {
+                    let value = params["value"].as_str().unwrap_or("").to_string();
+                    let _ = settings.update(|s| s.user_name = value);
+                }
+                "customRulesGlobal" => {
+                    let value = params["value"].as_str().unwrap_or("").to_string();
+                    let _ = settings.update(|s| s.custom_rules_global = value);
+                }
+                "customRulesApp" => {
+                    let bundle_id = params["bundleId"].as_str().unwrap_or("").to_string();
+                    let value     = params["value"].as_str().unwrap_or("").to_string();
+                    if !bundle_id.is_empty() {
+                        let _ = settings.update(|s| {
+                            if value.is_empty() {
+                                s.custom_rules_per_app.remove(&bundle_id);
+                            } else {
+                                s.custom_rules_per_app.insert(bundle_id, value);
+                            }
+                        });
+                    }
+                }
+                "clipboardContextEnabled" => {
+                    let enabled = params["value"].as_bool().unwrap_or(false);
+                    let _ = settings.update(|s| s.clipboard_context_enabled = enabled);
                 }
                 _ => warn!("unknown setting key: {key}"),
             }
