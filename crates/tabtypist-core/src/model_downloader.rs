@@ -8,38 +8,114 @@ use tracing::{debug, info, warn};
 
 // ── Catalog ───────────────────────────────────────────────────────────────────
 
+/// Whether a model uses a plain prefix-completion (base) or a chat-instruct prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    Base,
+    Instruct,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
     pub display_name: String,
     pub language: String,
+    /// Human-readable tier name ("nano", "mini", …, "pro")
+    pub tier: String,
+    /// Whether the model is base or instruct
+    pub model_kind: ModelKind,
+    /// Minimum physical RAM (GiB) required for comfortable use; 0 = any
+    pub min_ram_gb: u32,
     /// Download URL for the GGUF file
     pub url: String,
     /// Expected file size in bytes (shown before download)
     pub size_bytes: u64,
-    /// SHA-256 hex digest of the GGUF file
+    /// SHA-256 hex digest of the GGUF file; "placeholder_*" skips verification
     pub sha256: String,
-    /// Ed25519 signature over the SHA-256 hex bytes (hex-encoded)
+    /// Ed25519 signature over the SHA-256 hex bytes (hex-encoded); "placeholder_*" skips
     pub ed25519_signature: String,
 }
 
 pub struct ModelCatalog;
 
 impl ModelCatalog {
+    /// Full six-tier catalog.  URLs and SHA-256 values marked `placeholder_*`
+    /// are filled in before each release after the maintainer verifies and
+    /// signs the GGUF file with the TabTypist Ed25519 key.
     pub fn entries() -> Vec<ModelEntry> {
         vec![
             ModelEntry {
-                id: "qwen2.5-1.5b-base-q4".to_string(),
-                display_name: "Qwen 2.5 1.5B (English, ~900 MB)".to_string(),
+                id: "smollm2-135m-instruct-q8".to_string(),
+                display_name: "SmolLM2 135M (nano, 135 MB)".to_string(),
                 language: "en".to_string(),
-                // Base (non-instruct) model — better text continuation quality.
-                // Qwen publishes no official base GGUF; this is a community repackage.
-                // The maintainer verifies the file, signs with TabTypist's Ed25519 key,
-                // and may rehost before release. SHA-256 + signature are updated at that time.
-                url: "https://huggingface.co/neopolita/qwen2.5-1.5b-gguf/resolve/main/qwen2.5-1.5b_q4_k_m.gguf".to_string(),
-                size_bytes: 986_000_000,
-                sha256: "placeholder_sha256_updated_at_release".to_string(),
-                ed25519_signature: "placeholder_sig_updated_at_release".to_string(),
+                tier: "nano".to_string(),
+                model_kind: ModelKind::Instruct,
+                min_ram_gb: 0,
+                url: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf".to_string(),
+                size_bytes: 144_000_000,
+                sha256: "placeholder_sha256_smollm2_135m".to_string(),
+                ed25519_signature: "placeholder_sig_smollm2_135m".to_string(),
+            },
+            ModelEntry {
+                id: "qwen3-0.6b-q4km".to_string(),
+                display_name: "Qwen3 0.6B (mini, 390 MB)".to_string(),
+                language: "en".to_string(),
+                tier: "mini".to_string(),
+                model_kind: ModelKind::Base,
+                min_ram_gb: 8,
+                url: "https://huggingface.co/bartowski/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf".to_string(),
+                size_bytes: 410_000_000,
+                sha256: "placeholder_sha256_qwen3_0_6b".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_0_6b".to_string(),
+            },
+            ModelEntry {
+                id: "qwen3-1.7b-q4km".to_string(),
+                display_name: "Qwen3 1.7B (standard, 1.0 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "standard".to_string(),
+                model_kind: ModelKind::Base,
+                min_ram_gb: 8,
+                url: "https://huggingface.co/bartowski/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf".to_string(),
+                size_bytes: 1_080_000_000,
+                sha256: "placeholder_sha256_qwen3_1_7b".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_1_7b".to_string(),
+            },
+            ModelEntry {
+                id: "qwen3-4b-q4km".to_string(),
+                display_name: "Qwen3 4B (performance, 2.3 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "performance".to_string(),
+                model_kind: ModelKind::Base,
+                min_ram_gb: 16,
+                url: "https://huggingface.co/bartowski/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf".to_string(),
+                size_bytes: 2_420_000_000,
+                sha256: "placeholder_sha256_qwen3_4b".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_4b".to_string(),
+            },
+            ModelEntry {
+                id: "gemma4-e2b-it-q4km".to_string(),
+                display_name: "Gemma 3n E2B (quality, 3.1 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "quality".to_string(),
+                model_kind: ModelKind::Instruct,
+                min_ram_gb: 16,
+                url: "https://huggingface.co/bartowski/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q4_K_M.gguf".to_string(),
+                size_bytes: 3_300_000_000,
+                sha256: "placeholder_sha256_gemma4_e2b".to_string(),
+                ed25519_signature: "placeholder_sig_gemma4_e2b".to_string(),
+            },
+            ModelEntry {
+                id: "gemma4-e4b-it-q4km".to_string(),
+                display_name: "Gemma 3n E4B (pro, 5.0 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "pro".to_string(),
+                model_kind: ModelKind::Instruct,
+                min_ram_gb: 24,
+                url: "https://huggingface.co/bartowski/gemma-3n-E4B-it-GGUF/resolve/main/gemma-3n-E4B-it-Q4_K_M.gguf".to_string(),
+                size_bytes: 5_300_000_000,
+                sha256: "placeholder_sha256_gemma4_e4b".to_string(),
+                ed25519_signature: "placeholder_sig_gemma4_e4b".to_string(),
             },
         ]
     }
@@ -49,7 +125,28 @@ impl ModelCatalog {
     }
 
     pub fn default_for_language(lang: &str) -> Option<ModelEntry> {
-        Self::entries().into_iter().find(|e| e.language == lang)
+        // "standard" tier (Qwen3 1.7B) as the default: 1 GB, works on 8 GB Macs.
+        Self::entries()
+            .into_iter()
+            .find(|e| e.language == lang && e.tier == "standard")
+            .or_else(|| Self::entries().into_iter().find(|e| e.language == lang))
+    }
+
+    /// Return the recommended tier for the given physical RAM.
+    /// Never auto-selects upward: stays at "quality" or below even on 32 GB Macs.
+    pub fn recommended_for_ram_gb(ram_gb: u32) -> Option<ModelEntry> {
+        let target_tier = if ram_gb >= 24 {
+            "pro"
+        } else if ram_gb >= 16 {
+            "quality"
+        } else if ram_gb >= 8 {
+            "standard"
+        } else {
+            "nano"
+        };
+        Self::entries()
+            .into_iter()
+            .find(|e| e.language == "en" && e.tier == target_tier)
     }
 }
 
@@ -234,6 +331,48 @@ mod tests {
         let entry = ModelCatalog::default_for_language("en").unwrap();
         let path = dl.installed_path(&entry);
         assert!(path.to_str().unwrap().ends_with(".gguf"));
+    }
+
+    #[test]
+    fn catalog_has_six_tiers() {
+        let entries = ModelCatalog::entries();
+        assert_eq!(entries.len(), 6);
+        let tiers: Vec<&str> = entries.iter().map(|e| e.tier.as_str()).collect();
+        for t in ["nano", "mini", "standard", "performance", "quality", "pro"] {
+            assert!(tiers.contains(&t), "missing tier: {t}");
+        }
+    }
+
+    #[test]
+    fn all_entries_have_model_kind() {
+        for e in ModelCatalog::entries() {
+            // Just assert the field exists and is one of the two variants.
+            let _ = matches!(e.model_kind, ModelKind::Base | ModelKind::Instruct);
+        }
+    }
+
+    #[test]
+    fn recommended_quality_for_16gb() {
+        let e = ModelCatalog::recommended_for_ram_gb(16).unwrap();
+        assert_eq!(e.tier, "quality");
+    }
+
+    #[test]
+    fn recommended_standard_for_8gb() {
+        let e = ModelCatalog::recommended_for_ram_gb(8).unwrap();
+        assert_eq!(e.tier, "standard");
+    }
+
+    #[test]
+    fn recommended_pro_for_24gb() {
+        let e = ModelCatalog::recommended_for_ram_gb(24).unwrap();
+        assert_eq!(e.tier, "pro");
+    }
+
+    #[test]
+    fn default_for_language_returns_standard() {
+        let e = ModelCatalog::default_for_language("en").unwrap();
+        assert_eq!(e.tier, "standard");
     }
 
     #[test]

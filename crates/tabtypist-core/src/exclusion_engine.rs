@@ -47,6 +47,12 @@ impl ExclusionConfig {
         Self {
             always_off_bundles: HashSet::new(), // secured via is_secure_field flag
             default_off_bundles: [
+                // Terminal emulators (opt-in only — arbitrary shell prompts are risky)
+                "com.apple.Terminal",
+                "com.googlecode.iterm2",
+                "net.kovidgoyal.kitty",
+                "org.alacritty",
+                "io.alacritty",
                 // Password managers
                 "com.agilebits.onepassword7",
                 "com.agilebits.onepassword-osx",
@@ -151,6 +157,21 @@ impl ExclusionEngine {
             show_activation_toast: false,
         }
     }
+}
+
+// ── Terminal bundle helpers ───────────────────────────────────────────────────
+
+const TERMINAL_BUNDLES: &[&str] = &[
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "io.alacritty",
+];
+
+/// True when the bundle ID belongs to a known terminal emulator.
+pub fn is_terminal_bundle(bundle_id: &str) -> bool {
+    TERMINAL_BUNDLES.contains(&bundle_id)
 }
 
 // ── Remote config verification ────────────────────────────────────────────────

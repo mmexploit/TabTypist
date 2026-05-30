@@ -1,12 +1,28 @@
 import AppKit
 import Foundation
 
-// Borderless NSPanel that renders inline ghost text at the caret position.
+// ── NSColor hex helper ────────────────────────────────────────────────────────
+
+private extension NSColor {
+    convenience init?(hexString: String) {
+        var hex = hexString.trimmingCharacters(in: .whitespaces)
+        if hex.hasPrefix("#") { hex = String(hex.dropFirst()) }
+        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return nil }
+        self.init(
+            srgbRed:   CGFloat((value >> 16) & 0xFF) / 255,
+            green:     CGFloat((value >>  8) & 0xFF) / 255,
+            blue:      CGFloat( value        & 0xFF) / 255,
+            alpha:     1
+        )
+    }
+}
+
+// ── Borderless NSPanel that renders inline ghost text at the caret position. ─
 final class OverlayWindow: NSPanel {
     // Hard-disable key/main status. With .nonactivatingPanel the panel can still
     // become the *key* window of our (accessory) app, which on some macOS builds
     // affects how the next key event is routed before our CGEventTap sees it.
-    // Cotabby's OverlayController does the same override for the same reason.
+    // 's OverlayController does the same override for the same reason.
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
@@ -17,7 +33,7 @@ final class OverlayWindow: NSPanel {
     private init() {
         label = NSTextField(labelWithString: "")
         label.font = NSFont.systemFont(ofSize: 14, weight: .regular)
-        label.textColor = NSColor.labelColor.withAlphaComponent(0.4)
+        label.textColor = NSColor.labelColor.withAlphaComponent(0.4)  // overridden on every show
         label.backgroundColor = .clear
         label.isBezeled = false
         label.isEditable = false
@@ -40,6 +56,30 @@ final class OverlayWindow: NSPanel {
 
         contentView = label
     }
+
+    // ── Appearance helpers ────────────────────────────────────────────────────
+
+    /// Ghost-text opacity (30–100 %; default 40 %).  Read from UserDefaults on every
+    /// call so a settings change takes effect immediately without restart.
+    static func ghostOpacity() -> CGFloat {
+        guard UserDefaults.standard.object(forKey: "ghostTextOpacity") != nil else { return 0.4 }
+        return max(0.3, min(1.0, CGFloat(UserDefaults.standard.double(forKey: "ghostTextOpacity"))))
+    }
+
+    /// Resolved ghost-text color.  Applies the user-chosen colour (or labelColor)
+    /// plus the opacity setting.
+    static func ghostTextColor() -> NSColor {
+        let base: NSColor
+        if let hex = UserDefaults.standard.string(forKey: "ghostTextColorHex"),
+           let custom = NSColor(hexString: hex) {
+            base = custom
+        } else {
+            base = .labelColor
+        }
+        return base.withAlphaComponent(ghostOpacity())
+    }
+
+    // ── Show / hide ───────────────────────────────────────────────────────────
 
     // fontSize: AX-reported point size for the focused field (0 = unavailable, use estimate).
     func show(text: String, x: CGFloat, y: CGFloat, caretHeight: CGFloat,
@@ -83,6 +123,7 @@ final class OverlayWindow: NSPanel {
         caretHeight: CGFloat, usable: CGRect, panelW: CGFloat
     ) {
         label.font = font
+        label.textColor = OverlayWindow.ghostTextColor()
         label.usesSingleLineMode = true
         label.cell?.wraps = false
         label.cell?.truncatesLastVisibleLine = false
@@ -93,7 +134,8 @@ final class OverlayWindow: NSPanel {
         // Panel height = caret height exactly so text sits on the same baseline as the
         // host app's line. Using max(textHeight, caretHeight) caused the panel to extend
         // above the caret when the font rendered taller than the caret, skewing text up.
-        let panelH = max(caretHeight, 14)
+        let textH = (text as NSString).size(withAttributes: [.font: font]).height
+        let panelH = max(textH, caretHeight)
         let rawY = caretY - caretHeight          // panel bottom aligns with caret bottom
         let fx = max(usable.minX, min(caretX, usable.maxX - panelW))
         let fy = max(usable.minY, min(rawY, usable.maxY - panelH))
@@ -124,7 +166,7 @@ final class OverlayWindow: NSPanel {
 
         let attrStr = NSAttributedString(string: text, attributes: [
             .font: font,
-            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.4),
+            .foregroundColor: OverlayWindow.ghostTextColor(),
             .paragraphStyle: para,
         ])
 

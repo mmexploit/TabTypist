@@ -19,6 +19,20 @@ final class KeyCapture: @unchecked Sendable {
     // hiding it and triggering new inference.
     private(set) var isWordByWordInProgress: Bool = false
 
+    // Full-accept keycode: -1 = disabled.  Default: kVK_ANSI_Grave (50 = backtick).
+    // Persisted in UserDefaults; change takes effect immediately without restart.
+    private(set) var fullAcceptKeyCode: Int64 = {
+        guard UserDefaults.standard.object(forKey: "fullAcceptKeyCode") != nil else {
+            return Int64(kVK_ANSI_Grave)
+        }
+        return Int64(UserDefaults.standard.integer(forKey: "fullAcceptKeyCode"))
+    }()
+
+    func setFullAcceptKeyCode(_ keyCode: Int64) {
+        fullAcceptKeyCode = keyCode
+        UserDefaults.standard.set(Int(keyCode), forKey: "fullAcceptKeyCode")
+    }
+
     func setCompletion(_ text: String) {
         pendingCompletionText = text
         completionIsVisible = !text.isEmpty
@@ -169,7 +183,7 @@ final class KeyCapture: @unchecked Sendable {
                         IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
                     }
                 } else {
-                    // More words remain — partial acceptance (Cotypist style).
+                    // More words remain — partial acceptance ( style).
                     // Set the flag so the next AXMonitor poll repositions the overlay
                     // with the remaining text instead of hiding and re-inferring.
                     pendingCompletionText = rest
@@ -190,16 +204,102 @@ final class KeyCapture: @unchecked Sendable {
             }
             return Unmanaged.passRetained(event)
 
+        case _ where fullAcceptKeyCode > 0 && keyCode == fullAcceptKeyCode:
+            if completionIsVisible {
+                let all = pendingCompletionText
+                clearCompletion()
+                DispatchQueue.main.async {
+                    OverlayWindow.shared.hide()
+                    self.insertCompletion(all)
+                    IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
+                }
+                return nil // consume the key
+            }
+            return Unmanaged.passRetained(event)
+
         default:
             return Unmanaged.passRetained(event)
         }
     }
 
-    // Insert completion by pasting via Cmd+V — works universally (terminal, browser, native apps).
-    // AXUIElementSetAttributeValue fails in most modern apps.
+    // ── Text injection ────────────────────────────────────────────────────────
+
+    private enum InjectionMethod: String { case ax, cmdV }
+
+    private func cachedInjectionMethod(bundleId: String) -> InjectionMethod? {
+        guard let raw = UserDefaults.standard.string(forKey: "injectionMethod.\(bundleId)") else { return nil }
+        return InjectionMethod(rawValue: raw)
+    }
+
+    private func cacheInjectionMethod(_ method: InjectionMethod, bundleId: String) {
+        UserDefaults.standard.set(method.rawValue, forKey: "injectionMethod.\(bundleId)")
+    }
+
+    /// Try AX set-value first; fall back to Cmd+V if the app rejects it.
+    /// Per-bundle-ID preference is cached in UserDefaults.
     private func insertCompletion(_ text: String) {
         guard !text.isEmpty else { return }
+        let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let cached = cachedInjectionMethod(bundleId: bundleId)
 
+        if cached != .cmdV {
+            if tryAXInsert(text) {
+                if cached == nil { cacheInjectionMethod(.ax, bundleId: bundleId) }
+                return
+            }
+            if cached == .ax {
+                // Previously worked but now failing — invalidate cache and fall through.
+                UserDefaults.standard.removeObject(forKey: "injectionMethod.\(bundleId)")
+            }
+        }
+
+        cacheInjectionMethod(.cmdV, bundleId: bundleId)
+        cmdVInsert(text)
+    }
+
+    /// Attempt insertion via AX value write. Returns false if the app rejects it.
+    @discardableResult
+    private func tryAXInsert(_ text: String) -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef
+        ) == .success, let focusedRef else { return false }
+
+        let element = focusedRef as! AXUIElement  // safe: AX always returns AXUIElement here
+
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element, kAXValueAttribute as CFString, &valueRef
+        ) == .success, let currentStr = valueRef as? String else { return false }
+
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+        ) == .success, let rangeRef else { return false }
+
+        var range = CFRange()
+        guard AXValueGetValue(rangeRef as! AXValue, .cfRange, &range) else { return false }
+        let insertAt = range.location + range.length  // end of selection = caret
+
+        let ns = currentStr as NSString
+        guard insertAt >= 0 && insertAt <= ns.length else { return false }
+
+        let newStr = ns.substring(to: insertAt) + text + ns.substring(from: insertAt)
+        guard AXUIElementSetAttributeValue(
+            element, kAXValueAttribute as CFString, newStr as CFString
+        ) == .success else { return false }
+
+        // Advance caret to end of inserted text.
+        var newRange = CFRange(location: insertAt + (text as NSString).length, length: 0)
+        if let axRange = AXValueCreate(.cfRange, &newRange) {
+            AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+        }
+        return true
+    }
+
+    /// Paste via Cmd+V. Restores the previous pasteboard content after 150 ms.
+    private func cmdVInsert(_ text: String) {
         let pb = NSPasteboard.general
         let prev = pb.string(forType: .string)
 
@@ -207,14 +307,13 @@ final class KeyCapture: @unchecked Sendable {
         pb.setString(text, forType: .string)
 
         let src = CGEventSource(stateID: .hidSystemState)
-        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)  // 0x09 = V
+        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)   // V
         let vUp   = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
         vDown?.flags = .maskCommand
         vUp?.flags   = .maskCommand
         vDown?.post(tap: .cghidEventTap)
         vUp?.post(tap: .cghidEventTap)
 
-        // Restore previous pasteboard content after the paste completes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             pb.clearContents()
             if let prev { pb.setString(prev, forType: .string) }

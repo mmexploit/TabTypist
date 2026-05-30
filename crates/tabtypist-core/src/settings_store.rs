@@ -8,6 +8,26 @@ use tracing::{debug, info};
 
 const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionLength {
+    Short,
+    Medium,
+    #[default]
+    Long,
+}
+
+impl CompletionLength {
+    /// Token budget for each preset.
+    pub fn token_budget(self) -> u32 {
+        match self {
+            CompletionLength::Short  => 11,
+            CompletionLength::Medium => 18,
+            CompletionLength::Long   => 30,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub schema_version: u32,
@@ -38,6 +58,10 @@ pub struct Settings {
 
     /// Whether Input Monitoring permission was granted
     pub input_monitoring_granted: bool,
+
+    /// Completion length preset; controls how many tokens the core generates.
+    #[serde(default)]
+    pub completion_length: CompletionLength,
 }
 
 impl Default for Settings {
@@ -53,6 +77,7 @@ impl Default for Settings {
             onboarding_completed: false,
             onboarding_phase: 0,
             input_monitoring_granted: false,
+            completion_length: CompletionLength::Long,
         }
     }
 }
@@ -235,5 +260,27 @@ mod tests {
         };
         let migrated = migrate(old);
         assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn completion_length_token_budgets() {
+        assert_eq!(CompletionLength::Short.token_budget(),  11);
+        assert_eq!(CompletionLength::Medium.token_budget(), 18);
+        assert_eq!(CompletionLength::Long.token_budget(),   30);
+    }
+
+    #[test]
+    fn completion_length_default_is_long() {
+        assert_eq!(Settings::default().completion_length, CompletionLength::Long);
+    }
+
+    #[test]
+    fn completion_length_persists() {
+        let dir = TempDir::new().unwrap();
+        let store = store_in(&dir);
+        store.update(|s| s.completion_length = CompletionLength::Short).unwrap();
+        let raw = std::fs::read_to_string(&store.path).unwrap();
+        let reloaded: Settings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reloaded.completion_length, CompletionLength::Short);
     }
 }

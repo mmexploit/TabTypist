@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                             if result.is_err() { break 'outer; }
                             // New update — restart the timer.
                         }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(75)) => {
                             break 'debounce;
                         }
                     }
@@ -148,12 +148,13 @@ async fn main() -> Result<()> {
                 // Run inference on the blocking thread pool — serialised by this loop.
                 let prefix_c = update.prefix.clone();
                 let suffix_c = update.suffix.clone();
+                let max_tokens = s.completion_length.token_budget();
                 let result = tokio::task::spawn_blocking(
-                    move || completer.complete(&prefix_c, &suffix_c, 25)
+                    move || completer.complete(&prefix_c, &suffix_c, max_tokens)
                 ).await;
 
                 // Stale-completion guard: if the user typed during inference, the watch
-                // channel now holds a newer prefix. Cotabby calls this "workID drift" —
+                // channel now holds a newer prefix.  calls this "workID drift" —
                 // showing the result for an old prefix would paint ghost text at a caret
                 // position the user has already moved past, overlapping live typed text.
                 let latest_prefix = rx.borrow().as_ref().map(|u| u.prefix.clone());
@@ -236,17 +237,57 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Returns true when the prefix has enough context for a meaningful completion.
-/// Trigger as soon as the current sentence fragment has at least one complete word —
-/// matching Cotypist's eager policy so completions appear from the first word onward.
 fn should_trigger_completion(prefix: &str) -> bool {
-    let tail = prefix
-        .rsplit(|c: char| c == '\n' || c == '.' || c == '!' || c == '?')
-        .next()
-        .unwrap_or(prefix)
-        .trim();
-    let word_count = tail.split_whitespace().count();
-    word_count >= 1
+    !prefix.trim().is_empty()
+}
+
+/// True when the last line of `prefix` ends with a recognised shell-prompt suffix.
+/// Used to gate completions in terminal emulators so suggestions only appear at
+/// a prompt, never mid-command or inside interactive programs like vim or htop.
+fn has_terminal_prompt(prefix: &str) -> bool {
+    let last = prefix.lines().last().unwrap_or("");
+    last.ends_with("$ ")
+        || last.ends_with("> ")
+        || last.ends_with("❯ ")
+        || last.ends_with("% ")
+        || last.ends_with("# ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_terminal_prompt, should_trigger_completion};
+
+    #[test]
+    fn triggers_on_single_char() {
+        assert!(should_trigger_completion("h"));
+        assert!(should_trigger_completion("hello"));
+        assert!(should_trigger_completion("  hello  "));
+    }
+
+    #[test]
+    fn no_trigger_on_empty_or_whitespace() {
+        assert!(!should_trigger_completion(""));
+        assert!(!should_trigger_completion("   "));
+        assert!(!should_trigger_completion("\t\n"));
+    }
+
+    #[test]
+    fn terminal_prompt_detection_positive() {
+        assert!(has_terminal_prompt("user@host:~$ "));
+        assert!(has_terminal_prompt("some output\nuser@host:~$ "));
+        assert!(has_terminal_prompt("~/projects > "));
+        assert!(has_terminal_prompt("❯ "));
+        assert!(has_terminal_prompt("root@box:~# "));
+        assert!(has_terminal_prompt("(venv) % "));
+    }
+
+    #[test]
+    fn terminal_prompt_detection_negative() {
+        assert!(!has_terminal_prompt("git commit -m \"hello"));
+        assert!(!has_terminal_prompt("user@host:~$"));    // missing trailing space
+        assert!(!has_terminal_prompt(""));
+        assert!(!has_terminal_prompt("some normal text"));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -338,6 +379,19 @@ async fn handle_message(
             // Require at least 2 words in the current sentence fragment so the model has
             // a meaningful signal — avoids noisy single-word or empty-prefix suggestions.
             if !should_trigger_completion(&prefix) {
+                let _ = ctx_tx.send(None);
+                let _ = transport.lock().await
+                    .send_notification("hideOverlay", serde_json::json!({}))
+                    .await;
+                return;
+            }
+
+            // Terminal emulators: only trigger at a recognised shell prompt.
+            // The bundle is already default-off; this second guard prevents noisy
+            // suggestions mid-command when the user has explicitly enabled the app.
+            if exclusion_engine::is_terminal_bundle(&app_bundle_id)
+                && !has_terminal_prompt(&prefix)
+            {
                 let _ = ctx_tx.send(None);
                 let _ = transport.lock().await
                     .send_notification("hideOverlay", serde_json::json!({}))
@@ -465,6 +519,15 @@ async fn handle_message(
                 "enableApp" => {
                     let id = params["bundleId"].as_str().unwrap_or("").to_string();
                     let _ = settings.update(|s| { s.app_exclusion_overrides.insert(id, true); });
+                }
+                "completionLength" => {
+                    use settings_store::CompletionLength;
+                    let preset = match params["value"].as_str().unwrap_or("") {
+                        "short"  => CompletionLength::Short,
+                        "medium" => CompletionLength::Medium,
+                        _        => CompletionLength::Long,
+                    };
+                    let _ = settings.update(|s| s.completion_length = preset);
                 }
                 _ => warn!("unknown setting key: {key}"),
             }

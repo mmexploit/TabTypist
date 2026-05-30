@@ -10,8 +10,19 @@ final class AXMonitor: @unchecked Sendable {
     private var lastBundleId: String = ""
     private var lastPrefix: String = ""
 
+    // AXObserver — registered on the current app element; nil when not watching.
+    private var axObserver: AXObserver?
+    private var observedPid: pid_t = 0
+
+    // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
+    private var currentPollInterval: TimeInterval = 0.08
+    private var unchangedPollCount: Int = 0
+
+    // Debounce for Apple Intelligence completions (mirrors the 75 ms Rust debounce).
+    private var aiDebounceWork: DispatchWorkItem?
+
     func start() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: currentPollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
 
@@ -46,7 +57,48 @@ final class AXMonitor: @unchecked Sendable {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        tearDownAXObserver()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    // ── AXObserver lifecycle ──────────────────────────────────────────────────
+
+    private func tearDownAXObserver() {
+        guard let obs = axObserver else { return }
+        let source = AXObserverGetRunLoopSource(obs)
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
+        axObserver = nil
+        observedPid = 0
+    }
+
+    private func registerAXObserver(pid: pid_t) {
+        tearDownAXObserver()
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        // The callback must be @convention(c) — capture nothing, pass self via refcon.
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            Unmanaged<AXMonitor>.fromOpaque(refcon).takeUnretainedValue().poll()
+        }
+        var obs: AXObserver?
+        guard AXObserverCreate(pid, callback, &obs) == .success, let obs else { return }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        AXObserverAddNotification(obs, appElement, kAXValueChangedNotification as CFString, selfPtr)
+        AXObserverAddNotification(obs, appElement, kAXSelectedTextChangedNotification as CFString, selfPtr)
+        AXObserverAddNotification(obs, appElement, kAXFocusedUIElementChangedNotification as CFString, selfPtr)
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
+        axObserver = obs
+        observedPid = pid
+    }
+
+    // ── Adaptive backoff ──────────────────────────────────────────────────────
+
+    private func reschedulePollTimer() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: currentPollInterval, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
     }
 
     private func poll() {
@@ -74,6 +126,10 @@ final class AXMonitor: @unchecked Sendable {
         )
         guard result == .success, let element = focusedElement else { return }
         let axElement = element as! AXUIElement
+
+        // Register AXObserver when the app changes — ensures immediate notification
+        // delivery for apps with reliable AX support; timer remains the backstop.
+        if pid != observedPid { registerAXObserver(pid: pid) }
 
         // Check if it's a secure/password field
         var isSecure = false
@@ -195,8 +251,23 @@ final class AXMonitor: @unchecked Sendable {
             DispatchQueue.main.async { OverlayWindow.shared.hide() }
         }
 
-        // Only report if prefix changed or app changed
-        if prefix == lastPrefix && bundleId == lastBundleId { return }
+        // Adaptive backoff: widen the poll interval while idle; snap back on change.
+        if prefix == lastPrefix && bundleId == lastBundleId {
+            unchangedPollCount += 1
+            if unchangedPollCount >= 5 && currentPollInterval < 0.20 {
+                currentPollInterval = min(currentPollInterval * 2, 0.20)
+                unchangedPollCount = 0
+                reschedulePollTimer()
+            }
+            return
+        }
+        if currentPollInterval > 0.08 {
+            currentPollInterval = 0.08
+            unchangedPollCount = 0
+            reschedulePollTimer()
+        } else {
+            unchangedPollCount = 0
+        }
 
         // Word-by-word partial accept: the user just accepted one word via Tab.
         // Instead of hiding the overlay and waiting for new inference (250ms+ gap),
@@ -232,6 +303,44 @@ final class AXMonitor: @unchecked Sendable {
         // inference finishes for this latest prefix. Done client-side so there's no
         // IPC round-trip and no Rust handler clearing completion state behind our back.
         DispatchQueue.main.async { OverlayWindow.shared.hide() }
+
+        // ── Apple Intelligence engine bypass ──────────────────────────────────
+        // When the user has selected the on-device Apple backend, complete locally
+        // and bypass the Rust IPC entirely.  Only available on macOS 26+.
+        if #available(macOS 26, *) {
+            if AppleIntelligenceBackend.isAvailable,
+               UserDefaults.standard.string(forKey: "inferenceEngine") == "apple_intelligence" {
+                let prefixSnap = prefix
+                let appNameSnap = NSWorkspace.shared.runningApplications
+                    .first(where: { $0.bundleIdentifier == bundleId })?
+                    .localizedName ?? bundleId
+                let caretXSnap = caretX, screenYSnap = screenY
+                let caretHSnap = caretRect.height, fontSizeSnap = axFontSize
+                let frameSnap: CGRect? = inputFrameAX.height > 0
+                    ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH) : nil
+
+                aiDebounceWork?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard let text = await AppleIntelligenceBackend.complete(
+                            prefix: prefixSnap, appName: appNameSnap
+                        ), !text.isEmpty else { return }
+                        OverlayWindow.shared.show(
+                            text: text, x: caretXSnap, y: screenYSnap,
+                            caretHeight: caretHSnap, fontSize: fontSizeSnap,
+                            inputFrame: frameSnap
+                        )
+                        KeyCapture.shared.setCompletion(text)
+                        IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
+                    }
+                    self.aiDebounceWork = nil
+                }
+                aiDebounceWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.075, execute: work)
+                return
+            }
+        }
 
         // caretHeight=0 means AX couldn't determine caret bounds (Electron, terminal, etc.).
         // Send caretHeight=0 as a sentinel so Rust skips showOverlay for those apps.
