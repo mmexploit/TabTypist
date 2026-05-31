@@ -1,7 +1,9 @@
 import Foundation
 
-// FoundationModels is only available on macOS 26+.  The entire file is guarded
-// with an availability check so the rest of the app compiles on older SDKs.
+// FoundationModels ships with Xcode 26+ SDK.  Wrap the entire file so the
+// project still compiles against older SDKs (deployment target: macOS 14).
+#if canImport(FoundationModels)
+import FoundationModels
 
 @available(macOS 26, *)
 final class AppleIntelligenceBackend: Sendable {
@@ -131,3 +133,4 @@ final class AppleIntelligenceBackend: Sendable {
         return result.trimmingCharacters(in: .init(charactersIn: " \n\t"))
     }
 }
+#endif // canImport(FoundationModels)

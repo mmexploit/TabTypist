@@ -1,5 +1,6 @@
 import AppKit
 import Vision
+import ScreenCaptureKit
 
 // Captures the screen region ABOVE the focused text field and extracts text via
 // on-device Vision OCR.  The result is trimmed to the context budget and injected
@@ -41,14 +42,32 @@ final class VisualContextCapture: @unchecked Sendable {
             height: captureH
         )
 
-        guard let image = CGWindowListCreateImage(
-            captureRect,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            .bestResolution
-        ) else { return nil }
-
+        guard let image = await captureScreenRect(captureRect) else { return nil }
         return await recogniseText(in: image, above: inputFrame)
+    }
+
+    // MARK: – Screen capture (ScreenCaptureKit)
+
+    private func captureScreenRect(_ captureRect: CGRect) async -> CGImage? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first else { return nil }
+            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+            let config = SCStreamConfiguration()
+            // sourceRect is in display coordinate space (matches CG global coords).
+            config.sourceRect = CGRect(
+                x: captureRect.minX - display.frame.minX,
+                y: captureRect.minY - display.frame.minY,
+                width: captureRect.width,
+                height: captureRect.height
+            )
+            config.width = max(1, Int(captureRect.width))
+            config.height = max(1, Int(captureRect.height))
+            config.capturesAudio = false
+            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        } catch {
+            return nil
+        }
     }
 
     // MARK: – OCR

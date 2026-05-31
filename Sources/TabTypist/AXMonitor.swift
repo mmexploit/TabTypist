@@ -343,6 +343,7 @@ final class AXMonitor: @unchecked Sendable {
         // ── Apple Intelligence engine bypass ──────────────────────────────────
         // When the user has selected the on-device Apple backend, complete locally
         // and bypass the Rust IPC entirely.  Only available on macOS 26+.
+        #if canImport(FoundationModels)
         if #available(macOS 26, *) {
             if AppleIntelligenceBackend.isAvailable,
                UserDefaults.standard.string(forKey: "inferenceEngine") == "apple_intelligence" {
@@ -377,13 +378,15 @@ final class AXMonitor: @unchecked Sendable {
                 return
             }
         }
+        #endif // canImport(FoundationModels)
 
         // Kick off OCR for the next contextUpdate cycle (non-blocking).
         let ocrFrame = inputFrameAX
         let visualCtxCopy = latestVisualContext
         Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
             if let text = await VisualContextCapture.shared.capture(above: ocrFrame) {
-                await MainActor.run { self?.latestVisualContext = text }
+                await MainActor.run { self.latestVisualContext = text }
             }
         }
 
