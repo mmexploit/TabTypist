@@ -225,6 +225,9 @@ async fn main() -> Result<()> {
                     instr_ctx.clipboard_context.len(),
                     instr_ctx.app_name,
                 );
+                if !instr_ctx.visual_context.is_empty() {
+                    info!("visual_context text: {}", instr_ctx.visual_context.replace('\n', " | "));
+                }
 
                 let result = tokio::task::spawn_blocking(
                     move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)

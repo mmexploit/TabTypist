@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import IOKit.hid
 
 // Per-app toggle + telemetry consent + personalisation + model browser.
 final class SettingsWindowController: NSObject {
@@ -15,10 +16,10 @@ final class SettingsWindowController: NSObject {
 
         let view = SettingsView()
         let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 660)
+        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 760)
 
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 660),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 760),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -46,8 +47,43 @@ struct SettingsView: View {
     @State private var showResetConfirm: Bool = false
     @State private var downloadingCustom: Bool = false
 
+    @State private var axGranted: Bool = AXIsProcessTrusted()
+    @State private var screenGranted: Bool = CGPreflightScreenCaptureAccess()
+    @State private var inputMonGranted: Bool =
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+
     var body: some View {
         Form {
+            Section("Permissions") {
+                permissionRow(
+                    name: "Accessibility", granted: axGranted,
+                    detail: "Read caret position and insert completions when you press Tab."
+                ) {
+                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+                    _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
+                    openPrivacyPane("Privacy_Accessibility")
+                }
+                permissionRow(
+                    name: "Input Monitoring", granted: inputMonGranted,
+                    detail: "Detect the Tab key so suggestions can be accepted."
+                ) {
+                    _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+                    openPrivacyPane("Privacy_ListenEvent")
+                }
+                permissionRow(
+                    name: "Screen Recording", granted: screenGranted,
+                    detail: "Optional. On-device OCR of nearby on-screen text for context-aware suggestions."
+                ) {
+                    _ = CGRequestScreenCaptureAccess()
+                    openPrivacyPane("Privacy_ScreenCapture")
+                }
+                if !screenGranted {
+                    Text("After enabling Screen Recording, macOS may ask you to quit & reopen TabTypist.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Privacy") {
                 Toggle("Send anonymous usage data", isOn: $telemetryEnabled)
                     .onChange(of: telemetryEnabled) { _, enabled in
@@ -158,6 +194,46 @@ struct SettingsView: View {
                     customModelUrl = ""
                 }
             }
+        }
+        // Permissions can change while this window is open (the user grants them in
+        // System Settings). Re-poll periodically so the rows update live.
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
+            refreshPermissions()
+        }
+    }
+
+    // ── Permission row ─────────────────────────────────────────────────────────
+
+    @ViewBuilder
+    private func permissionRow(
+        name: String, granted: Bool, detail: String, grant: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(granted ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if granted {
+                Text("Granted").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Grant…", action: grant)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func refreshPermissions() {
+        axGranted = AXIsProcessTrusted()
+        screenGranted = CGPreflightScreenCaptureAccess()
+        inputMonGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    }
+
+    private func openPrivacyPane(_ anchor: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+            NSWorkspace.shared.open(url)
         }
     }
 

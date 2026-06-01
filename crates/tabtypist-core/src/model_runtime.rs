@@ -314,55 +314,55 @@ fn do_complete_instruct(
     // generates a fresh turn; the explicit framing (not the prefix's position in a chat
     // turn) is what stops it from replying conversationally or echoing the name.
     let _ = max_tokens; // length governed by token budget, not an in-prompt word range
+    // Single instruction paragraph (verified against gemma-4-E2B): it makes the model
+    // EXTEND the user's sentence — even a complete one, with a natural next clause —
+    // using the background only for topic, never answering it. Heavier multi-rule
+    // framing made the model either echo the prefix or reply to the conversation.
     let mut sections: Vec<String> = vec![
-        "Task:".into(),
-        "- Continue the user's existing text exactly at the caret position.".into(),
-        "- This is autocomplete, not chat. Do not answer the user or start a conversation.".into(),
-        "- Never repeat, restate, or quote the text before the caret.".into(),
-        "- Use clipboard context only when it directly helps the inline continuation.".into(),
-        "- Return plain text only with no thinking, labels, bullets, markdown, quotes, or explanation.".into(),
+        "You are an inline autocomplete inside a text field. Continue the user's text \
+         from EXACTLY where they stopped, writing only the characters that come next. \
+         If they are mid-word or mid-sentence, finish it naturally. If their sentence \
+         already looks complete, add the next clause they would most likely type (e.g. \
+         a reason or detail). Use the background ONLY to make the continuation specific \
+         to their topic — never answer, reply to, or quote the background. Output only \
+         the continuation, nothing else.".into(),
     ];
 
     if !instr_ctx.user_name.is_empty() {
-        sections.push(String::new());
-        sections.push("User Profile Context:".into());
-        sections.push(format!("- The user's name is {}.", instr_ctx.user_name));
+        sections.push(format!(
+            "The user's name is {} (use it only if they were already writing it).",
+            instr_ctx.user_name
+        ));
     }
-
     if !instr_ctx.custom_rules.is_empty() {
         sections.push(String::new());
-        sections.push("Your style preferences:".into());
+        sections.push("Style preferences (apply only when they fit the continuation naturally):".into());
         for rule in instr_ctx.custom_rules.lines().filter(|l| !l.trim().is_empty()) {
             sections.push(format!("- {}", rule.trim()));
         }
-        sections.push("Apply these only when they fit the continuation naturally; never break the rules above.".into());
     }
 
     sections.push(String::new());
-    sections.push("Screen context:".into());
+    sections.push("Background (reference only — do NOT reply to any of this):".into());
     if !instr_ctx.app_name.is_empty() {
-        sections.push(format!("User is on {}.", instr_ctx.app_name));
+        sections.push(format!("The user is typing in {}.", instr_ctx.app_name));
     }
     if !instr_ctx.visual_context.is_empty() {
-        sections.push("Screen content:".into());
+        sections.push("Nearby on-screen text (e.g. the conversation being replied to):".into());
         sections.push(instr_ctx.visual_context.clone());
     }
     if !instr_ctx.clipboard_context.is_empty() {
         let clip = &instr_ctx.clipboard_context;
         let tail = if clip.len() > 200 { &clip[clip.len() - 200..] } else { clip.as_str() };
-        sections.push("User's clipboard:".into());
+        sections.push("Clipboard:".into());
         sections.push(tail.to_string());
     }
-
-    // Final, high-attention block sits right before the prefix so small instruct models
-    // weigh the language hint and the "begin with the continuation" cue.
-    sections.push(String::new());
-    sections.push("Final instruction:".into());
     if !instr_ctx.language.is_empty() {
-        sections.push(format!("- Write the continuation in {}.", instr_ctx.language));
+        sections.push(format!("Write the continuation in {}.", instr_ctx.language));
     }
-    sections.push("- The next line must begin directly with the continuation text.".into());
-    sections.push("Text before caret:".into());
+
+    sections.push(String::new());
+    sections.push("The user has typed (continue from the end, do not repeat it):".into());
     sections.push(prefix.to_string());
     let body = sections.join("\n");
 
@@ -458,7 +458,19 @@ fn do_complete_instruct(
         sampler.accept(token);
     }
 
-    let normalized = normalize_completion(result, prefix);
+    let mut normalized = normalize_completion(result, prefix);
+
+    // Spacing fix (instruct path only): chat models emit the continuation as a fresh
+    // message, so a new-word continuation arrives WITHOUT the joining space (e.g.
+    // prefix "…properly" + "and I am…" → "…properlyand I am…"). If the prefix ends on a
+    // word character and the continuation starts on one too, insert the missing space.
+    // (The base/FIM path handles its own spacing and must not get this.)
+    let prefix_ends_word = prefix.chars().last().map_or(false, |c| c.is_alphanumeric());
+    let comp_starts_word = normalized.chars().next().map_or(false, |c| c.is_alphanumeric());
+    if prefix_ends_word && comp_starts_word {
+        normalized.insert(0, ' ');
+    }
+
     tracing::debug!("instruct completion len={}", normalized.len());
     Ok(if multi_line {
         truncate_at_blank_line(normalized)

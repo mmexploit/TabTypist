@@ -141,6 +141,7 @@ enum OnboardingPhase: Int, CaseIterable {
     case welcome = 1
     case languageSelect
     case accessibilityPermission
+    case screenRecordingPermission
     case modelDownload
     case done
 }
@@ -151,12 +152,13 @@ struct OnboardingView: View {
     @ObservedObject var state: OnboardingState
     @State private var phase: OnboardingPhase = .welcome
     @State private var accessibilityGranted: Bool = false
+    @State private var screenRecordingGranted: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Progress dots
             HStack(spacing: 6) {
-                ForEach(1...4, id: \.self) { i in
+                ForEach(1...5, id: \.self) { i in
                     Circle()
                         .fill(i <= phase.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
                         .frame(width: 6, height: 6)
@@ -204,6 +206,8 @@ struct OnboardingView: View {
             LanguageSelectStep(state: state)
         case .accessibilityPermission:
             AccessibilityStep(granted: $accessibilityGranted)
+        case .screenRecordingPermission:
+            ScreenRecordingStep(granted: $screenRecordingGranted)
         case .modelDownload:
             ModelDownloadStep(state: state)
         case .done:
@@ -230,6 +234,19 @@ struct OnboardingView: View {
                 } else {
                     Button("Grant Accessibility…") { requestAccessibility() }
                         .buttonStyle(.borderedProminent)
+                }
+
+            case .screenRecordingPermission:
+                if screenRecordingGranted {
+                    Button("Continue") { withAnimation { advance() } }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    HStack(spacing: 12) {
+                        // Optional: completions still work without screen context.
+                        Button("Skip") { withAnimation { advance() } }
+                        Button("Grant Screen Recording…") { requestScreenRecording() }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
 
             case .modelDownload:
@@ -270,6 +287,15 @@ struct OnboardingView: View {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         accessibilityGranted = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         if accessibilityGranted { withAnimation { advance() } }
+    }
+
+    private func requestScreenRecording() {
+        // Surfaces the system prompt and adds TabTypist to the Screen Recording list.
+        // The grant typically only takes effect after a relaunch, so we don't auto-
+        // advance here; the step polls CGPreflightScreenCaptureAccess() and flips to
+        // the granted state if macOS reports it live.
+        _ = CGRequestScreenCaptureAccess()
+        screenRecordingGranted = CGPreflightScreenCaptureAccess()
     }
 
     private func startDownload() {
@@ -470,6 +496,70 @@ struct AccessibilityStep: View {
     }
 }
 
+struct ScreenRecordingStep: View {
+    @Binding var granted: Bool
+    @State private var isPolling = false
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "rectangle.dashed.badge.record")
+                .font(.system(size: 56))
+                .foregroundStyle(granted ? .green : .orange)
+                .animation(.spring, value: granted)
+
+            VStack(spacing: 10) {
+                Text("Screen Recording Access")
+                    .font(.title2.bold())
+                Text("Optional. TabTypist reads on-screen text near the field (e.g. the conversation you're replying to) so suggestions fit the context. The capture is processed on-device with OCR and never leaves your Mac.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 400)
+            }
+
+            if granted {
+                Label("Access granted", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.callout.weight(.medium))
+            } else {
+                VStack(spacing: 8) {
+                    Text("After clicking the button below:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("System Settings → Privacy & Security → Screen Recording → enable TabTypist")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
+                    Text("macOS may ask you to quit & reopen TabTypist for this to take effect.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
+                }
+                .padding(12)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 32)
+        .onAppear {
+            granted = CGPreflightScreenCaptureAccess()
+            startPolling()
+        }
+        .onDisappear { isPolling = false }
+    }
+
+    private func startPolling() {
+        isPolling = true
+        Task {
+            while isPolling && !granted {
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                await MainActor.run { granted = CGPreflightScreenCaptureAccess() }
+            }
+        }
+    }
+}
+
 struct ModelDownloadStep: View {
     @ObservedObject var state: OnboardingState
 
@@ -559,7 +649,7 @@ struct ModelDownloadStep: View {
         case .downloading:  return "Downloading…"
         case .verifying:    return "Verifying…"
         case .complete:     return "Download Complete"
-        case .failed(let e): return "Download Failed"
+        case .failed:       return "Download Failed"
         }
     }
 

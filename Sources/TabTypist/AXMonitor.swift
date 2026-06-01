@@ -14,8 +14,14 @@ final class AXMonitor: @unchecked Sendable {
     private var axObserver: AXObserver?
     private var observedPid: pid_t = 0
 
-    // Latest OCR result (refreshed asynchronously on each context change).
+    // Latest OCR result (refreshed asynchronously on each context change), tagged with
+    // the bundle id it was captured from. The tag scopes the context to its source app:
+    // OCR only updates `latestVisualContext` when capture SUCCEEDS, so without the tag a
+    // failed capture in a new app (e.g. Notes, where the text field fills the window and
+    // there's nothing above it) would leave the previous app's context (e.g. Telegram)
+    // attached to the new app's completions.
     private var latestVisualContext: String = ""
+    private var latestVisualContextBundle: String = ""
 
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
     private var currentPollInterval: TimeInterval = 0.08
@@ -256,6 +262,7 @@ final class AXMonitor: @unchecked Sendable {
            let fv = frameVal {
             AXValueGetValue(fv as! AXValue, .cgRect, &inputFrameAX)
         }
+
         let inputX = inputFrameAX.origin.x
         let inputY = inputFrameAX.height > 0
             ? primaryScreenHeight - inputFrameAX.origin.y - inputFrameAX.height
@@ -381,12 +388,23 @@ final class AXMonitor: @unchecked Sendable {
         #endif // canImport(FoundationModels)
 
         // Kick off OCR for the next contextUpdate cycle (non-blocking).
-        let ocrFrame = inputFrameAX
-        let visualCtxCopy = latestVisualContext
+        // Both frames are AX coords (top-left origin), which is what ScreenCaptureKit's
+        // sourceRect also uses — so no flips are needed downstream.
+        let ocrField = inputFrameAX
+        let ocrPid = pid
+        let ocrBundle = bundleId
+        // Only reuse the cached OCR if it belongs to the app we're now typing in —
+        // otherwise send nothing rather than another app's stale context.
+        let visualCtxCopy = (latestVisualContextBundle == bundleId) ? latestVisualContext : ""
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            if let text = await VisualContextCapture.shared.capture(above: ocrFrame) {
-                await MainActor.run { self.latestVisualContext = text }
+            if let text = await VisualContextCapture.shared.capture(
+                pid: ocrPid, fieldFrameCG: ocrField
+            ) {
+                await MainActor.run {
+                    self.latestVisualContext = text
+                    self.latestVisualContextBundle = ocrBundle
+                }
             }
         }
 
