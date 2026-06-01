@@ -15,10 +15,10 @@ final class SettingsWindowController: NSObject {
 
         let view = SettingsView()
         let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 580)
+        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 660)
 
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 660),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -40,6 +40,8 @@ struct SettingsView: View {
         UserDefaults.standard.string(forKey: "customRulesGlobal") ?? ""
     @State private var clipboardEnabled: Bool =
         UserDefaults.standard.bool(forKey: "clipboardContextEnabled")
+    @State private var hfToken: String =
+        UserDefaults.standard.string(forKey: "hfToken") ?? ""
     @State private var customModelUrl: String = ""
     @State private var showResetConfirm: Bool = false
     @State private var downloadingCustom: Bool = false
@@ -105,6 +107,16 @@ struct SettingsView: View {
 
                 Divider()
 
+                LabeledContent("HuggingFace token") {
+                    SecureField("hf_...", text: $hfToken)
+                        .onSubmit { sendHfToken() }
+                }
+                Text("Required for all model downloads. Get yours at huggingface.co/settings/tokens (read-only token is enough).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
                 LabeledContent("Custom GGUF") {
                     TextField("HuggingFace GGUF URL", text: $customModelUrl)
                 }
@@ -156,6 +168,14 @@ struct SettingsView: View {
         UserDefaults.standard.set(trimmed, forKey: "userName")
         IPCBridge.shared.notify(method: "updateSetting", params: [
             "key": "userName", "value": trimmed,
+        ])
+    }
+
+    private func sendHfToken() {
+        let trimmed = hfToken.trimmingCharacters(in: .whitespaces)
+        UserDefaults.standard.set(trimmed, forKey: "hfToken")
+        IPCBridge.shared.notify(method: "updateSetting", params: [
+            "key": "hfToken", "value": trimmed,
         ])
     }
 

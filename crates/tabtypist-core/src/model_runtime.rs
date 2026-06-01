@@ -303,50 +303,86 @@ fn do_complete_instruct(
     instr_ctx: &InstrContext,
 ) -> Result<String> {
     use llama_cpp_2::llama_batch::LlamaBatch;
-    use llama_cpp_2::model::{AddBos, LlamaChatMessage};
+    use llama_cpp_2::model::AddBos;
     use llama_cpp_2::sampling::LlamaSampler;
 
-    // Build the system prompt from the context budget (ADR 0006: 1 000 chars).
-    let mut system_parts: Vec<String> = Vec::new();
-    let length_hint = if !instr_ctx.length_instruction.is_empty() {
-        instr_ctx.length_instruction.clone()
-    } else {
-        format!("Write a completion of up to {} tokens.", max_tokens)
-    };
-    system_parts.push(format!("Complete the user's text. {length_hint}"));
+    // Build the instruction body. Structure adapted from cotabby's LlamaPromptRenderer,
+    // which drives the same gemma-4-E2B model: one richly-structured plain-text block
+    // with explicit "this is autocomplete, not chat" framing, the prefix labelled and
+    // placed LAST as "Text before caret:", and a final cue that the next line must begin
+    // with the continuation. Critically there is NO assistant prefill — the model
+    // generates a fresh turn; the explicit framing (not the prefix's position in a chat
+    // turn) is what stops it from replying conversationally or echoing the name.
+    let _ = max_tokens; // length governed by token budget, not an in-prompt word range
+    let mut sections: Vec<String> = vec![
+        "Task:".into(),
+        "- Continue the user's existing text exactly at the caret position.".into(),
+        "- This is autocomplete, not chat. Do not answer the user or start a conversation.".into(),
+        "- Never repeat, restate, or quote the text before the caret.".into(),
+        "- Use clipboard context only when it directly helps the inline continuation.".into(),
+        "- Return plain text only with no thinking, labels, bullets, markdown, quotes, or explanation.".into(),
+    ];
+
+    if !instr_ctx.user_name.is_empty() {
+        sections.push(String::new());
+        sections.push("User Profile Context:".into());
+        sections.push(format!("- The user's name is {}.", instr_ctx.user_name));
+    }
+
+    if !instr_ctx.custom_rules.is_empty() {
+        sections.push(String::new());
+        sections.push("Your style preferences:".into());
+        for rule in instr_ctx.custom_rules.lines().filter(|l| !l.trim().is_empty()) {
+            sections.push(format!("- {}", rule.trim()));
+        }
+        sections.push("Apply these only when they fit the continuation naturally; never break the rules above.".into());
+    }
+
+    sections.push(String::new());
+    sections.push("Screen context:".into());
+    if !instr_ctx.app_name.is_empty() {
+        sections.push(format!("User is on {}.", instr_ctx.app_name));
+    }
     if !instr_ctx.visual_context.is_empty() {
-        system_parts.push(format!("For context, here is what is visible above the text field: {}", instr_ctx.visual_context));
+        sections.push("Screen content:".into());
+        sections.push(instr_ctx.visual_context.clone());
     }
     if !instr_ctx.clipboard_context.is_empty() {
         let clip = &instr_ctx.clipboard_context;
-        let tail = if clip.len() > 200 { &clip[clip.len()-200..] } else { clip.as_str() };
-        system_parts.push(format!("The user's clipboard contains: {tail}"));
+        let tail = if clip.len() > 200 { &clip[clip.len() - 200..] } else { clip.as_str() };
+        sections.push("User's clipboard:".into());
+        sections.push(tail.to_string());
     }
-    if !instr_ctx.app_name.is_empty() {
-        system_parts.push(format!("The user is typing in {}.", instr_ctx.app_name));
-    }
+
+    // Final, high-attention block sits right before the prefix so small instruct models
+    // weigh the language hint and the "begin with the continuation" cue.
+    sections.push(String::new());
+    sections.push("Final instruction:".into());
     if !instr_ctx.language.is_empty() {
-        system_parts.push(format!("The user is writing in {}.", instr_ctx.language));
+        sections.push(format!("- Write the continuation in {}.", instr_ctx.language));
     }
-    if !instr_ctx.user_name.is_empty() {
-        system_parts.push(format!("The user's name is {}.", instr_ctx.user_name));
-    }
-    if !instr_ctx.custom_rules.is_empty() {
-        system_parts.push(format!("Additional instructions: {}", instr_ctx.custom_rules));
-    }
-    system_parts.push("Output ONLY the continuation text — no quotes, no explanation.".into());
-    let system = system_parts.join(" ");
+    sections.push("- The next line must begin directly with the continuation text.".into());
+    sections.push("Text before caret:".into());
+    sections.push(prefix.to_string());
+    let body = sections.join("\n");
 
-    // Apply the model's built-in chat template; fall back to ChatML if none is embedded.
-    let tmpl = model.chat_template(None)
-        .unwrap_or_else(|_| llama_cpp_2::model::LlamaChatTemplate::new("chatml").unwrap());
-
-    let messages = vec![
-        LlamaChatMessage::new("system".into(), system).context("building system message")?,
-        LlamaChatMessage::new("user".into(), prefix.to_string()).context("building user message")?,
-    ];
-    let prompt = model.apply_chat_template(&tmpl, &messages, true)
-        .context("applying chat template")?;
+    // Wrap the body in one user turn using the model's ACTUAL chat-control tokens.
+    // We detect the family by which marker is a real single token (see single_token):
+    // emitting the wrong markers as literal text is what fed gemma-4 garbage before.
+    // str_to_token parses special tokens (parse_special=true), so the correct literal
+    // strings map to the real control tokens. We format manually rather than via the
+    // embedded Jinja template — llama-cpp-2's engine returns ffi error -1 on gemma-4's
+    // template and chokes on Qwen3's thinking-mode conditionals.
+    let prompt = if single_token(model, "<|turn>").is_some() {
+        // Gemma 4 (gemma4 arch): <|turn>role … <turn|>.
+        format!("<|turn>user\n{body}<turn|>\n<|turn>model\n")
+    } else if single_token(model, "<start_of_turn>").is_some() {
+        // Gemma 2 / 3.
+        format!("<start_of_turn>user\n{body}<end_of_turn>\n<start_of_turn>model\n")
+    } else {
+        // ChatML (Qwen3, SmolLM2, and most other instruct GGUFs).
+        format!("<|im_start|>user\n{body}<|im_end|>\n<|im_start|>assistant\n")
+    };
 
     // Tokenise the full prompt.
     let new_tokens = model.str_to_token(&prompt, AddBos::Always)
@@ -372,6 +408,16 @@ fn do_complete_instruct(
 
     let fim_pad_id = resolve_token(model, "<|fim_pad|>");
     let endoftext_id = resolve_token(model, "<|endoftext|>");
+    // Turn terminators — only treat as stops when they are real single tokens for
+    // this model, so a marker that splits into junk pieces can't false-match.
+    let stop_tokens: Vec<LlamaToken> = [
+        single_token(model, "<turn|>"),       // gemma-4
+        single_token(model, "<end_of_turn>"), // gemma-2/3
+        single_token(model, "<|im_end|>"),    // chatml
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     let mut sampler = LlamaSampler::chain_simple([
         LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
@@ -391,6 +437,7 @@ fn do_complete_instruct(
         if token == model.token_eos() { break; }
         if fim_pad_id.map_or(false, |id| token == id) { break; }
         if endoftext_id.map_or(false, |id| token == id) { break; }
+        if stop_tokens.contains(&token) { break; }
 
         let piece = model.token_to_piece(token, &mut decoder, false, None)?;
         if !piece.is_empty() {
@@ -494,6 +541,23 @@ fn resolve_token(
         .and_then(|t| t.into_iter().next())
 }
 
+/// Returns the token id for `s` ONLY if it maps to exactly one vocab token, i.e.
+/// `s` is a real special control token in this model rather than ordinary text
+/// that splits into several pieces. Used to detect a model's chat format and its
+/// turn-terminator: e.g. gemma-4 has `<|turn>`/`<turn|>` as single tokens, while
+/// `<start_of_turn>` (the gemma-2/3 marker) splits into 7 junk tokens there.
+fn single_token(
+    model: &llama_cpp_2::model::LlamaModel,
+    s: &str,
+) -> Option<LlamaToken> {
+    use llama_cpp_2::model::AddBos;
+    model
+        .str_to_token(s, AddBos::Never)
+        .ok()
+        .filter(|t| t.len() == 1)
+        .map(|t| t[0])
+}
+
 // ── Sentence-boundary helpers ─────────────────────────────────────────────────
 
 fn ends_at_sentence_boundary(text: &str) -> bool {
@@ -542,7 +606,13 @@ pub fn normalize_completion(raw: String, prefix: &str) -> String {
     let mut text = text
         .replace("<|im_start|>assistant", "")
         .replace("<|im_start|>", "")
-        .replace("<|im_end|>", "");
+        .replace("<|im_end|>", "")
+        .replace("<start_of_turn>model", "")
+        .replace("<start_of_turn>", "")
+        .replace("<end_of_turn>", "")
+        .replace("<|turn>model", "")
+        .replace("<|turn>", "")
+        .replace("<turn|>", "");
 
     text = text.replace('\r', "");
     text = suppress_echo(text, prefix);

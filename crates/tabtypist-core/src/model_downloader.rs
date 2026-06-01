@@ -93,27 +93,53 @@ impl ModelCatalog {
                 sha256: "placeholder_sha256_qwen3_4b".to_string(),
                 ed25519_signature: "placeholder_sig_qwen3_4b".to_string(),
             },
+            // quality tier: Qwen3 8B (default, no auth needed) + Gemma 4 E2B via unsloth
             ModelEntry {
-                id: "gemma4-e2b-it-q4km".to_string(),
-                display_name: "Gemma 3n E2B (quality, 3.1 GB)".to_string(),
+                id: "qwen3-8b-q4km".to_string(),
+                display_name: "Qwen3 8B (quality, 5.2 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "quality".to_string(),
                 model_kind: ModelKind::Instruct,
                 min_ram_gb: 16,
-                url: "https://huggingface.co/bartowski/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q4_K_M.gguf".to_string(),
-                size_bytes: 3_300_000_000,
+                url: "https://huggingface.co/bartowski/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf".to_string(),
+                size_bytes: 5_200_000_000,
+                sha256: "placeholder_sha256_qwen3_8b".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_8b".to_string(),
+            },
+            ModelEntry {
+                id: "gemma4-e2b-it-q4km".to_string(),
+                display_name: "Gemma 4 E2B (quality, 3.1 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "quality".to_string(),
+                model_kind: ModelKind::Instruct,
+                min_ram_gb: 16,
+                url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf".to_string(),
+                size_bytes: 3_100_000_000,
                 sha256: "placeholder_sha256_gemma4_e2b".to_string(),
                 ed25519_signature: "placeholder_sig_gemma4_e2b".to_string(),
             },
+            // pro tier: Qwen3 14B (default, no auth needed) + Gemma 4 E4B via unsloth
             ModelEntry {
-                id: "gemma4-e4b-it-q4km".to_string(),
-                display_name: "Gemma 3n E4B (pro, 5.0 GB)".to_string(),
+                id: "qwen3-14b-q4km".to_string(),
+                display_name: "Qwen3 14B (pro, 9.2 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "pro".to_string(),
                 model_kind: ModelKind::Instruct,
                 min_ram_gb: 24,
-                url: "https://huggingface.co/bartowski/gemma-3n-E4B-it-GGUF/resolve/main/gemma-3n-E4B-it-Q4_K_M.gguf".to_string(),
-                size_bytes: 5_300_000_000,
+                url: "https://huggingface.co/bartowski/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf".to_string(),
+                size_bytes: 9_200_000_000,
+                sha256: "placeholder_sha256_qwen3_14b".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_14b".to_string(),
+            },
+            ModelEntry {
+                id: "gemma4-e4b-it-q4km".to_string(),
+                display_name: "Gemma 4 E4B (pro, 5.0 GB)".to_string(),
+                language: "en".to_string(),
+                tier: "pro".to_string(),
+                model_kind: ModelKind::Instruct,
+                min_ram_gb: 24,
+                url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf".to_string(),
+                size_bytes: 5_000_000_000,
                 sha256: "placeholder_sha256_gemma4_e4b".to_string(),
                 ed25519_signature: "placeholder_sig_gemma4_e4b".to_string(),
             },
@@ -186,9 +212,11 @@ impl ModelDownloader {
 
     /// Download `entry` to the install directory, sending progress updates.
     /// Supports resumable download via HTTP Range.
+    /// `hf_token` — HuggingFace API token; required for all hf.co downloads as of 2025.
     pub async fn download(
         &self,
         entry: &ModelEntry,
+        hf_token: Option<&str>,
         progress_tx: watch::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
         std::fs::create_dir_all(&self.install_dir)?;
@@ -205,6 +233,9 @@ impl ModelDownloader {
 
         let client = reqwest::Client::new();
         let mut req = client.get(&entry.url);
+        if let Some(token) = hf_token.filter(|t| !t.is_empty()) {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
         if already_have > 0 {
             req = req.header("Range", format!("bytes={}-", already_have));
             info!("resuming download from byte {already_have}");
@@ -334,13 +365,15 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_six_tiers() {
+    fn catalog_has_required_tiers() {
         let entries = ModelCatalog::entries();
-        assert_eq!(entries.len(), 6);
         let tiers: Vec<&str> = entries.iter().map(|e| e.tier.as_str()).collect();
         for t in ["nano", "mini", "standard", "performance", "quality", "pro"] {
             assert!(tiers.contains(&t), "missing tier: {t}");
         }
+        // quality and pro each have two model options (Qwen3 default + Gemma alternative)
+        assert_eq!(tiers.iter().filter(|&&t| t == "quality").count(), 2);
+        assert_eq!(tiers.iter().filter(|&&t| t == "pro").count(), 2);
     }
 
     #[test]

@@ -77,11 +77,23 @@ async fn main() -> Result<()> {
 
     let router: Arc<Mutex<LanguageRouter>> = Arc::new(Mutex::new(LanguageRouter::new()));
 
-    let en_entry = ModelCatalog::default_for_language("en")
-        .context("no English model in catalog")?;
-    if downloader.is_installed(&en_entry) {
-        info!("loading English model from {:?}", downloader.installed_path(&en_entry));
-        match model_runtime::LlamaCppCompleter::load(&downloader.installed_path(&en_entry)) {
+    // Prefer the model the user explicitly selected (stored in model_overrides),
+    // then the catalog default, then any installed model.  This prevents re-showing
+    // onboarding when the user picked a non-default tier.
+    let installed_en_entry: Option<ModelEntry> = {
+        let overridden = settings.get()
+            .model_overrides
+            .get("en")
+            .and_then(|id| ModelCatalog::find(id))
+            .filter(|e| downloader.is_installed(e));
+        let default_entry = ModelCatalog::default_for_language("en")
+            .filter(|e| downloader.is_installed(e));
+        let any_entry = ModelCatalog::entries().into_iter().find(|e| downloader.is_installed(e));
+        overridden.or(default_entry).or(any_entry)
+    };
+    if let Some(ref en_entry) = installed_en_entry {
+        info!("loading English model from {:?}", downloader.installed_path(en_entry));
+        match model_runtime::LlamaCppCompleter::load(&downloader.installed_path(en_entry)) {
             Ok(c) => {
                 router.lock().await.register("en", Arc::new(c));
                 info!("English model loaded");
@@ -131,6 +143,10 @@ async fn main() -> Result<()> {
         let vocab_inf     = vocab.clone();
 
         tokio::spawn(async move {
+            // Last completion text we actually surfaced. Used to break the
+            // post-acceptance repetition loop where the model keeps re-suggesting
+            // the text the user just accepted (now part of the prefix).
+            let mut last_shown: Option<String> = None;
             'outer: loop {
                 // Block until a new context update arrives.
                 if rx.changed().await.is_err() { break; }
@@ -202,6 +218,14 @@ async fn main() -> Result<()> {
                     custom_rules,
                 };
 
+                info!(
+                    "inference: prefix_len={} visual_ctx_len={} clipboard_len={} app={:?}",
+                    update.prefix.len(),
+                    instr_ctx.visual_context.len(),
+                    instr_ctx.clipboard_context.len(),
+                    instr_ctx.app_name,
+                );
+
                 let result = tokio::task::spawn_blocking(
                     move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)
                 ).await;
@@ -222,6 +246,14 @@ async fn main() -> Result<()> {
                             info!("completion empty after truncation — suppressing overlay");
                             continue;
                         }
+                        // Repetition guard: if this is the same suggestion we just
+                        // showed (typically right after the user accepted it), don't
+                        // surface it again — that's the "keeps repeating" loop.
+                        if last_shown.as_deref() == Some(text.as_str()) {
+                            info!("suppressing repeated completion {:?}", text);
+                            continue;
+                        }
+                        last_shown = Some(text.clone());
                         *current_inf.lock().await = Some(text.clone());
 
                         // Show overlay when caret bounds are known (standard) or when
@@ -256,7 +288,7 @@ async fn main() -> Result<()> {
 
     // Tell Swift whether onboarding is needed.
     {
-        let needs_onboarding = !downloader.is_installed(&en_entry)
+        let needs_onboarding = installed_en_entry.is_none()
             || !settings.get().onboarding_completed;
         transport.lock().await
             .send_notification("ready", serde_json::json!({ "needsOnboarding": needs_onboarding }))
@@ -545,9 +577,11 @@ async fn handle_message(
             let lang       = params["language"].as_str().unwrap_or("en").to_string();
             let model_id   = params["modelId"].as_str().map(|s| s.to_string());
             let custom_url = params["customUrl"].as_str().map(|s| s.to_string());
+            let hf_token   = settings.get().hf_token;
             let transport_c  = transport.clone();
             let router_c     = router.clone();
             let downloader_c = downloader.clone();
+            let settings_c   = settings.clone();
 
             tokio::spawn(async move {
                 // Priority: explicit customUrl > modelId > language default.
@@ -606,9 +640,14 @@ async fn handle_message(
                     }
                 });
 
-                match downloader_c.download(&entry, progress_tx).await {
+                let token_ref = if hf_token.is_empty() { None } else { Some(hf_token.as_str()) };
+                match downloader_c.download(&entry, token_ref, progress_tx).await {
                     Ok(path) => {
                         info!("model installed at {path:?}; loading into router");
+                        // Persist which model the user selected so relaunch finds it.
+                        let _ = settings_c.update(|s| {
+                            s.model_overrides.insert(lang.clone(), entry.id.clone());
+                        });
                         match model_runtime::LlamaCppCompleter::load(&path) {
                             Ok(c) => {
                                 router_c.lock().await.register(lang.clone(), Arc::new(c));
@@ -698,6 +737,10 @@ async fn handle_message(
                 "clipboardContextEnabled" => {
                     let enabled = params["value"].as_bool().unwrap_or(false);
                     let _ = settings.update(|s| s.clipboard_context_enabled = enabled);
+                }
+                "hfToken" => {
+                    let value = params["value"].as_str().unwrap_or("").to_string();
+                    let _ = settings.update(|s| s.hf_token = value);
                 }
                 _ => warn!("unknown setting key: {key}"),
             }

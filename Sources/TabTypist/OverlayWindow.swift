@@ -262,14 +262,29 @@ final class OverlayWindow: NSPanel {
         orderFront(nil)
     }
 
-    func hide() {
-        lastHideTime = Date()
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.08
-            animator().alphaValue = 0
-        }, completionHandler: {
-            self.orderOut(nil)
-        })
+    // armStabilityGate: only true for acceptance/dismiss hides. After a paste the
+    // host app briefly reports a stale AX caret, so we suppress shows for 150 ms to
+    // avoid painting ghost text at the old position. The per-keystroke hide must NOT
+    // arm the gate — it races the 75 ms inference debounce and would drop the
+    // legitimate reposition for the new caret.
+    func hide(armStabilityGate: Bool = false) {
+        if armStabilityGate {
+            // Acceptance / dismiss: arm the post-paste stability gate and use a brief
+            // fade so the ghost text doesn't pop out abruptly after the user accepts.
+            lastHideTime = Date()
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.08
+                animator().alphaValue = 0
+            }, completionHandler: {
+                self.orderOut(nil)
+            })
+        } else {
+            // Typing / app-switch: hide INSTANTLY. A fade here keeps the stale ghost
+            // text on screen for ~80 ms while the user is already typing over it, so it
+            // visibly lags behind the caret and overlaps the freshly typed characters.
+            alphaValue = 0
+            orderOut(nil)
+        }
         KeyCapture.shared.clearCompletion()
     }
 }

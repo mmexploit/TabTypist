@@ -203,7 +203,7 @@ final class KeyCapture: @unchecked Sendable {
                     // Last (or only) word — full acceptance.
                     clearCompletion()
                     DispatchQueue.main.async {
-                        OverlayWindow.shared.hide()
+                        OverlayWindow.shared.hide(armStabilityGate: true)
                         self.insertCompletion(word)
                         IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
                     }
@@ -224,7 +224,7 @@ final class KeyCapture: @unchecked Sendable {
         case Int64(kVK_Escape):
             if completionIsVisible {
                 clearCompletion()
-                DispatchQueue.main.async { OverlayWindow.shared.hide() }
+                DispatchQueue.main.async { OverlayWindow.shared.hide(armStabilityGate: true) }
                 IPCBridge.shared.notify(method: "dismissCompletion", params: [:])
             }
             return Unmanaged.passRetained(event)
@@ -234,7 +234,7 @@ final class KeyCapture: @unchecked Sendable {
                 let all = pendingCompletionText
                 clearCompletion()
                 DispatchQueue.main.async {
-                    OverlayWindow.shared.hide()
+                    OverlayWindow.shared.hide(armStabilityGate: true)
                     self.insertCompletion(all)
                     IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
                 }

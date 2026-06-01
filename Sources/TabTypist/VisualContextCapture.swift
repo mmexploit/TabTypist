@@ -29,40 +29,41 @@ final class VisualContextCapture: @unchecked Sendable {
         guard CGPreflightScreenCaptureAccess() else { return nil }
         guard inputFrame.width > 10 && inputFrame.height > 10 else { return nil }
 
-        // Capture region: full-width strip from screen top down to inputFrame top.
         let primaryScreen = NSScreen.screens.first?.frame ?? .zero
-        let captureY = inputFrame.minY           // bottom of region in Cocoa
-        let captureH = primaryScreen.height - captureY
-        guard captureH > 20 else { return nil }
+        let screenH = primaryScreen.height
 
-        let captureRect = CGRect(
-            x: primaryScreen.minX,
-            y: primaryScreen.minY + captureY,    // flip to screen coords
+        // inputFrame is in Cocoa coords (origin bottom-left, y-up). ScreenCaptureKit's
+        // sourceRect is in the display's coord space (origin TOP-left, y-down). Convert:
+        // a Cocoa y maps to top-left y as (screenH - y). The region ABOVE the field runs
+        // from the screen top (top-left y = 0) down to the field's TOP edge, which in
+        // Cocoa is inputFrame.maxY, i.e. top-left y = screenH - inputFrame.maxY.
+        let regionHeight = screenH - inputFrame.maxY
+        guard regionHeight > 20 else { return nil }
+
+        let sourceRect = CGRect(
+            x: 0,
+            y: 0,
             width: primaryScreen.width,
-            height: captureH
+            height: regionHeight
         )
 
-        guard let image = await captureScreenRect(captureRect) else { return nil }
-        return await recogniseText(in: image, above: inputFrame)
+        guard let image = await captureScreenRect(sourceRect) else { return nil }
+        return await recogniseText(in: image)
     }
 
     // MARK: – Screen capture (ScreenCaptureKit)
 
-    private func captureScreenRect(_ captureRect: CGRect) async -> CGImage? {
+    /// `sourceRect` is already in the display's top-left coordinate space.
+    private func captureScreenRect(_ sourceRect: CGRect) async -> CGImage? {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first else { return nil }
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let config = SCStreamConfiguration()
-            // sourceRect is in display coordinate space (matches CG global coords).
-            config.sourceRect = CGRect(
-                x: captureRect.minX - display.frame.minX,
-                y: captureRect.minY - display.frame.minY,
-                width: captureRect.width,
-                height: captureRect.height
-            )
-            config.width = max(1, Int(captureRect.width))
-            config.height = max(1, Int(captureRect.height))
+            config.sourceRect = sourceRect
+            // 2× for Retina sharpness so OCR reads small chat text reliably.
+            config.width  = max(1, Int(sourceRect.width) * 2)
+            config.height = max(1, Int(sourceRect.height) * 2)
             config.capturesAudio = false
             return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         } catch {
@@ -72,12 +73,16 @@ final class VisualContextCapture: @unchecked Sendable {
 
     // MARK: – OCR
 
-    private func recogniseText(in image: CGImage, above inputFrame: CGRect) async -> String? {
+    private func recogniseText(in image: CGImage) async -> String? {
         return await withCheckedContinuation { continuation in
             let request = VNRecognizeTextRequest { request, _ in
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
-                let lines = observations.compactMap { $0.topCandidates(1).first?.string }
-                let raw = lines.joined(separator: " ")
+                // Vision returns observations in no guaranteed order. Sort top-to-bottom
+                // (boundingBox origin is bottom-left, so higher minY = higher on screen)
+                // so the proximity trim's tail is the text closest to the input field.
+                let ordered = observations.sorted { $0.boundingBox.minY > $1.boundingBox.minY }
+                let lines = ordered.compactMap { $0.topCandidates(1).first?.string }
+                let raw = lines.joined(separator: "\n")
                 let trimmed = VisualContextCapture.trim(raw)
                 continuation.resume(returning: trimmed.isEmpty ? nil : trimmed)
             }

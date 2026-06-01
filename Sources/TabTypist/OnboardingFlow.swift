@@ -20,8 +20,12 @@ struct ModelTierInfo: Identifiable {
         ModelTierInfo(id: "qwen3-0.6b-q4km",           tier: "mini",        displayName: "Qwen3 0.6B",      sizeGB: 0.41, minRAMGB: 8,  isInstruct: false),
         ModelTierInfo(id: "qwen3-1.7b-q4km",           tier: "standard",    displayName: "Qwen3 1.7B",      sizeGB: 1.08, minRAMGB: 8,  isInstruct: false),
         ModelTierInfo(id: "qwen3-4b-q4km",             tier: "performance", displayName: "Qwen3 4B",        sizeGB: 2.42, minRAMGB: 16, isInstruct: false),
-        ModelTierInfo(id: "gemma4-e2b-it-q4km",        tier: "quality",     displayName: "Gemma 3n E2B",    sizeGB: 3.30, minRAMGB: 16, isInstruct: true),
-        ModelTierInfo(id: "gemma4-e4b-it-q4km",        tier: "pro",         displayName: "Gemma 3n E4B",    sizeGB: 5.30, minRAMGB: 24, isInstruct: true),
+        // quality: Qwen3 8B (default, open) or Gemma 4 E2B (via unsloth)
+        ModelTierInfo(id: "qwen3-8b-q4km",             tier: "quality",     displayName: "Qwen3 8B",        sizeGB: 5.20, minRAMGB: 16, isInstruct: true),
+        ModelTierInfo(id: "gemma4-e2b-it-q4km",        tier: "quality",     displayName: "Gemma 4 E2B",     sizeGB: 3.10, minRAMGB: 16, isInstruct: true),
+        // pro: Qwen3 14B (default, open) or Gemma 4 E4B (via unsloth)
+        ModelTierInfo(id: "qwen3-14b-q4km",            tier: "pro",         displayName: "Qwen3 14B",       sizeGB: 9.20, minRAMGB: 24, isInstruct: true),
+        ModelTierInfo(id: "gemma4-e4b-it-q4km",        tier: "pro",         displayName: "Gemma 4 E4B",     sizeGB: 5.00, minRAMGB: 24, isInstruct: true),
     ]
 
     var sizeLabel: String { String(format: "%.1f GB", sizeGB) }

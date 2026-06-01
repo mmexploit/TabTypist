@@ -83,6 +83,10 @@ pub struct Settings {
     /// When true, the current clipboard text is included in the instruct context window.
     #[serde(default)]
     pub clipboard_context_enabled: bool,
+
+    /// HuggingFace API token — required for model downloads (hf.co now needs auth).
+    #[serde(default)]
+    pub hf_token: String,
 }
 
 impl Default for Settings {
@@ -104,6 +108,7 @@ impl Default for Settings {
             custom_rules_global: String::new(),
             custom_rules_per_app: HashMap::new(),
             clipboard_context_enabled: false,
+            hf_token: String::new(),
         }
     }
 }
