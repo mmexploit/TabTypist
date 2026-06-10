@@ -148,17 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                 let bundleId = (params["appBundleId"] as? String) ?? ""
                 fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) fs=\(fontSize) text=\(text.prefix(40))\n", stderr)
 
-                if PopupCardWindow.shouldUsePopup(bundleId: bundleId, caretHeight: height),
-                   let frame = inputFrame {
-                    OverlayWindow.shared.hide()
-                    PopupCardWindow.shared.show(text: text, inputFrame: frame)
-                } else {
-                    PopupCardWindow.shared.hide()
-                    OverlayWindow.shared.show(
-                        text: text, x: x, y: y, caretHeight: height,
-                        fontSize: fontSize, inputFrame: inputFrame
-                    )
-                }
+                OverlayRouter.present(
+                    text: text, caretX: x, caretTopY: y, caretHeight: height,
+                    fontSize: fontSize, inputFrame: inputFrame, bundleId: bundleId
+                )
                 KeyCapture.shared.setCompletion(text)
 
             case "acceptCompletion":

@@ -204,6 +204,7 @@ final class KeyCapture: @unchecked Sendable {
                     clearCompletion()
                     DispatchQueue.main.async {
                         OverlayWindow.shared.hide(armStabilityGate: true)
+                        PopupCardWindow.shared.hide()
                         self.insertCompletion(word)
                         IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
                     }
@@ -224,7 +225,10 @@ final class KeyCapture: @unchecked Sendable {
         case Int64(kVK_Escape):
             if completionIsVisible {
                 clearCompletion()
-                DispatchQueue.main.async { OverlayWindow.shared.hide(armStabilityGate: true) }
+                DispatchQueue.main.async {
+                    OverlayWindow.shared.hide(armStabilityGate: true)
+                    PopupCardWindow.shared.hide()
+                }
                 IPCBridge.shared.notify(method: "dismissCompletion", params: [:])
             }
             return Unmanaged.passRetained(event)
@@ -235,6 +239,7 @@ final class KeyCapture: @unchecked Sendable {
                 clearCompletion()
                 DispatchQueue.main.async {
                     OverlayWindow.shared.hide(armStabilityGate: true)
+                    PopupCardWindow.shared.hide()
                     self.insertCompletion(all)
                     IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
                 }
@@ -293,14 +298,25 @@ final class KeyCapture: @unchecked Sendable {
 
         let element = focusedRef as! AXUIElement  // safe: AX always returns AXUIElement here
 
+        // Web/Electron content (Chromium exposes AXDOMIdentifier/AXDOMClassList on its
+        // nodes): AX text writes return .success WITHOUT mutating the DOM. That false
+        // success used to get cached as "ax works here", making Tab consume the
+        // keystroke while inserting nothing (Slack, Discord, in-browser editors).
+        // Paste is the only reliable injection for web content.
+        if Self.isWebContent(element) { return false }
+
         // Preferred: insert at the caret by replacing the (empty) selection. This is a
         // localized edit, so rich-text engines like Notes' NSTextView keep their
         // formatting AND don't re-run a document-wide "Capitalize Words" substitution
         // on the surrounding text. The whole-value rewrite below was handing Notes a
         // brand-new document string, which made it Title-Case every accepted word.
+        //
+        // .success alone is NOT proof the edit landed — custom text views (Telegram's
+        // composer among them) acknowledge the write and silently drop it. Verify by
+        // reading the field back; on a no-op fall through to the next strategy.
         if AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFString
-        ) == .success {
+        ) == .success, Self.insertionLanded(element, inserted: text) {
             return true
         }
 
@@ -328,12 +344,49 @@ final class KeyCapture: @unchecked Sendable {
             element, kAXValueAttribute as CFString, newStr as CFString
         ) == .success else { return false }
 
+        // Same false-success guard as above: confirm the rewrite actually stuck.
+        var verifyRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &verifyRef) == .success,
+           let after = verifyRef as? String, after != newStr {
+            return false
+        }
+
         // Advance caret to end of inserted text.
         var newRange = CFRange(location: insertAt + (text as NSString).length, length: 0)
         if let axRange = AXValueCreate(.cfRange, &newRange) {
             AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
         }
         return true
+    }
+
+    /// True when the focused element is Chromium-rendered web content, where AX text
+    /// writes are acknowledged but not applied.
+    private static func isWebContent(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &names) == .success,
+              let attrs = names as? [String] else { return false }
+        return attrs.contains("AXDOMIdentifier") || attrs.contains("AXDOMClassList")
+    }
+
+    /// Confirms an AXSelectedText replacement actually landed: the text before the
+    /// caret must now end with the inserted string. Native AX writes apply
+    /// synchronously, so an immediate read-back is reliable. Fields that expose no
+    /// readable value can't be disproven — trust the .success there rather than
+    /// risking a double insert via the paste fallback.
+    private static func insertionLanded(_ element: AXUIElement, inserted: String) -> Bool {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+              let value = valueRef as? String else { return true }
+
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rangeRef else { return value.contains(inserted) }
+        var range = CFRange()
+        guard AXValueGetValue(rangeRef as! AXValue, .cfRange, &range) else { return value.contains(inserted) }
+
+        let ns = value as NSString
+        let caret = min(max(0, range.location), ns.length)
+        return ns.substring(to: caret).hasSuffix(inserted)
     }
 
     /// Paste via Cmd+V. Restores the previous pasteboard content after 150 ms.
@@ -352,7 +405,9 @@ final class KeyCapture: @unchecked Sendable {
         vDown?.post(tap: .cghidEventTap)
         vUp?.post(tap: .cghidEventTap)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        // Electron apps handle the synthetic Cmd+V asynchronously (renderer IPC), so a
+        // 150 ms restore could race the paste and re-insert the OLD clipboard content.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             pb.clearContents()
             if let prev { pb.setString(prev, forType: .string) }
         }

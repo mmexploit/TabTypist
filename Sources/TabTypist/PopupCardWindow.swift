@@ -37,7 +37,13 @@ final class PopupCardWindow: NSPanel {
         contentView = label
     }
 
-    /// Known-unreliable bundle IDs that trigger popup mode automatically.
+    /// Known-unreliable bundle IDs that trigger popup mode automatically. Browsers
+    /// only: their caret geometry is genuinely absent or fabricated. Electron chat
+    /// apps (Slack, Discord, …) are deliberately NOT listed — Chromium's composer
+    /// caret rect is usually good, so they render inline at the caret like native
+    /// apps, and the per-show geometry gate in shouldUsePopup catches the polls where
+    /// the rect is junk (outside the field / implausibly tall) and falls back to the
+    /// card just for those.
     static let unreliableBundles: Set<String> = [
         "org.mozilla.firefox",
         "com.google.Chrome",
@@ -46,12 +52,26 @@ final class PopupCardWindow: NSPanel {
         "com.operasoftware.Opera",
     ]
 
-    /// True when popup mode should be used for the given app (automatic or user-pinned).
-    static func shouldUsePopup(bundleId: String, caretHeight: CGFloat) -> Bool {
-        if caretHeight == 0 { return true }
+    /// True when popup mode should be used for the given app (user-pinned, automatic,
+    /// or because the caret geometry fails validation). The geometry gate is cotabby's
+    /// caret-quality idea: a caret taller than any plausible text line, or lying
+    /// outside the field it supposedly belongs to, is junk — trusting it paints ghost
+    /// text over existing content even in apps not on the bundle list.
+    static func shouldUsePopup(
+        bundleId: String,
+        caretHeight: CGFloat,
+        caretPoint: NSPoint? = nil,
+        inputFrame: CGRect? = nil
+    ) -> Bool {
         let pinned = UserDefaults.standard.string(forKey: "overlayMode.\(bundleId)")
         if pinned == "popup" { return true }
         if pinned == "inline" { return false }
+        if caretHeight == 0 { return true }
+        if caretHeight > 60 { return true }
+        if let p = caretPoint, let f = inputFrame, f.height > 0,
+           !f.insetBy(dx: -8, dy: -8).contains(p) {
+            return true
+        }
         return unreliableBundles.contains(bundleId)
     }
 
@@ -77,17 +97,19 @@ final class PopupCardWindow: NSPanel {
         let cardW = max(120, min(measured.width + cardPadding * 2 + 4, maxW))
         let cardH = max(30, measured.height + cardPadding * 2)
 
-        // Position: just below the field bottom edge.
+        // Prefer just below the field; when there's no room (chat composers like
+        // Slack's sit at the very bottom of the screen) flip ABOVE the field instead
+        // of clamping into the field, which would cover the text being typed.
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(inputFrame) })
+            ?? NSScreen.screens.first
+        let visibleMinY = screen?.visibleFrame.minY ?? 0
         let fx = inputFrame.minX + cardPadding
-        let fy = inputFrame.minY - cardH - cardGap
+        var fy = inputFrame.minY - cardH - cardGap
+        if fy < visibleMinY {
+            fy = inputFrame.maxY + cardGap
+        }
 
-        // Clamp to screen bottom.
-        let clampedY = max(
-            (NSScreen.screens.first?.visibleFrame.minY ?? 0),
-            fy
-        )
-
-        setFrame(NSRect(x: fx, y: clampedY, width: cardW, height: cardH), display: true)
+        setFrame(NSRect(x: fx, y: fy, width: cardW, height: cardH), display: true)
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
         alphaValue = 1
         orderFront(nil)
@@ -95,5 +117,42 @@ final class PopupCardWindow: NSPanel {
 
     func hide() {
         orderOut(nil)
+    }
+}
+
+// ── Overlay routing ───────────────────────────────────────────────────────────
+
+/// Single chokepoint that decides inline ghost text vs popup card and presents the
+/// completion. Every display path (Rust showOverlay, word-by-word reposition, Apple
+/// Intelligence bypass) must come through here so a popup-mode app can never get
+/// inline ghost text painted at an untrustworthy caret.
+///
+/// Deliberately does NOT call `OverlayWindow.hide()` — that clears the pending
+/// completion in KeyCapture, which would break Tab for callers (word-by-word) that
+/// keep the completion alive across a re-present. Visual dismissal only.
+enum OverlayRouter {
+    static func present(
+        text: String,
+        caretX: CGFloat,
+        caretTopY: CGFloat,
+        caretHeight: CGFloat,
+        fontSize: CGFloat,
+        inputFrame: CGRect?,
+        bundleId: String
+    ) {
+        let caretPoint = NSPoint(x: caretX, y: caretTopY - caretHeight / 2)
+        if PopupCardWindow.shouldUsePopup(
+            bundleId: bundleId, caretHeight: caretHeight,
+            caretPoint: caretPoint, inputFrame: inputFrame
+        ), let frame = inputFrame {
+            OverlayWindow.shared.orderOutOnly()
+            PopupCardWindow.shared.show(text: text, inputFrame: frame)
+        } else {
+            PopupCardWindow.shared.hide()
+            OverlayWindow.shared.show(
+                text: text, x: caretX, y: caretTopY, caretHeight: caretHeight,
+                fontSize: fontSize, inputFrame: inputFrame
+            )
+        }
     }
 }

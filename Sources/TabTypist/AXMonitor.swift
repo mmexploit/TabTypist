@@ -80,6 +80,7 @@ final class AXMonitor: @unchecked Sendable {
         if !lastBundleId.isEmpty && bundleId != lastBundleId {
             DispatchQueue.main.async {
                 OverlayWindow.shared.hide()
+                PopupCardWindow.shared.hide()
                 FieldEdgeIndicator.shared.hide()
             }
         }
@@ -341,7 +342,24 @@ final class AXMonitor: @unchecked Sendable {
         // Now that we've confirmed the new app exposes a real editing context,
         // a true bundle change is a genuine app switch — hide the stale overlay.
         if bundleId != lastBundleId && !lastBundleId.isEmpty {
-            DispatchQueue.main.async { OverlayWindow.shared.hide() }
+            DispatchQueue.main.async {
+                OverlayWindow.shared.hide()
+                PopupCardWindow.shared.hide()
+            }
+        }
+
+        // Update the field-edge indicator on EVERY poll, not just on prefix changes:
+        // scrolling, window moves, and clicking into another field don't change the
+        // prefix, but they do move the field on screen — repositioning here keeps the
+        // logo pinned to the field instead of stranded at its old location. (show()
+        // skips the window churn when nothing moved.)
+        let fieldFrame: CGRect? = inputFrameAX.height > 0
+            ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH) : nil
+        let caretLineMidY: CGFloat? = caretRect.height > 0
+            ? primaryScreenHeight - caretRect.origin.y - caretRect.height / 2 : nil
+        DispatchQueue.main.async {
+            if let f = fieldFrame { FieldEdgeIndicator.shared.show(inputFrame: f, caretLineMidY: caretLineMidY) }
+            else { FieldEdgeIndicator.shared.hide() }
         }
 
         // Adaptive backoff: widen the poll interval while idle; snap back on change.
@@ -370,15 +388,19 @@ final class AXMonitor: @unchecked Sendable {
             KeyCapture.shared.clearWordByWordFlag()
             lastPrefix = prefix
             let remaining = KeyCapture.shared.pendingCompletionText
-            if !remaining.isEmpty && caretRect.height > 0 {
+            // Route through the same inline-vs-popup decision as a fresh completion:
+            // in a popup-mode app (Slack etc.) the repositioned tail must go back to
+            // the card, not be painted inline at an untrustworthy caret.
+            if !remaining.isEmpty && (caretRect.height > 0 || inputFrameAX.height > 0) {
                 let frame: CGRect? = inputFrameAX.height > 0
                     ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH)
                     : nil
+                let caretH = caretRect.height
                 DispatchQueue.main.async {
-                    OverlayWindow.shared.show(
-                        text: remaining, x: caretX, y: screenY,
-                        caretHeight: caretRect.height, fontSize: axFontSize,
-                        inputFrame: frame)
+                    OverlayRouter.present(
+                        text: remaining, caretX: caretX, caretTopY: screenY,
+                        caretHeight: caretH, fontSize: axFontSize,
+                        inputFrame: frame, bundleId: bundleId)
                 }
             }
             return
@@ -386,14 +408,6 @@ final class AXMonitor: @unchecked Sendable {
 
         lastPrefix = prefix
         lastBundleId = bundleId
-
-        // Update field-edge indicator position.
-        let fieldFrame: CGRect? = inputFrameAX.height > 0
-            ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH) : nil
-        DispatchQueue.main.async {
-            if let f = fieldFrame { FieldEdgeIndicator.shared.show(inputFrame: f) }
-            else { FieldEdgeIndicator.shared.hide() }
-        }
 
         // Log once per real contextUpdate, not 20x/sec on idle polls.
         fputs("AXMonitor: primaryH=\(primaryScreenHeight) axRect=\(caretRect) caretX=\(caretX) screenY=\(screenY) field=(\(inputX),\(inputY),\(inputW),\(inputH)) bundle=\(bundleId)\n", stderr)
@@ -403,7 +417,10 @@ final class AXMonitor: @unchecked Sendable {
         // input. Hide it now; the new overlay arrives after the Rust debounce +
         // inference finishes for this latest prefix. Done client-side so there's no
         // IPC round-trip and no Rust handler clearing completion state behind our back.
-        DispatchQueue.main.async { OverlayWindow.shared.hide() }
+        DispatchQueue.main.async {
+            OverlayWindow.shared.hide()
+            PopupCardWindow.shared.hide()
+        }
 
         // ── Apple Intelligence engine bypass ──────────────────────────────────
         // When the user has selected the on-device Apple backend, complete locally
@@ -428,10 +445,10 @@ final class AXMonitor: @unchecked Sendable {
                         guard let text = await AppleIntelligenceBackend.complete(
                             prefix: prefixSnap, appName: appNameSnap
                         ), !text.isEmpty else { return }
-                        OverlayWindow.shared.show(
-                            text: text, x: caretXSnap, y: screenYSnap,
+                        OverlayRouter.present(
+                            text: text, caretX: caretXSnap, caretTopY: screenYSnap,
                             caretHeight: caretHSnap, fontSize: fontSizeSnap,
-                            inputFrame: frameSnap
+                            inputFrame: frameSnap, bundleId: bundleId
                         )
                         KeyCapture.shared.setCompletion(text)
                         IPCBridge.shared.notify(method: "acceptCompletion", params: [:])

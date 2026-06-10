@@ -148,7 +148,13 @@ final class OverlayWindow: NSPanel {
               ).size().width
             : 0
         let singleLineW = ghostW + pillW + 4
-        let availableInline = max(20, safe.maxX - x)
+        // Inline fit must respect the FIELD's right border (usable), not the screen's.
+        // In a narrow textbox the ghost can fit on screen while poking past the field;
+        // single-line mode then left-clamped the panel back over the user's own text —
+        // the narrow-field overlap bug. When it doesn't fit after the caret, fall
+        // through to wrapped mode, which starts at the caret and wraps down inside the
+        // field's borders. (The caret can sit inside the ±4 pt inset, so floor at 0.)
+        let availableInline = max(0, usable.maxX - x)
 
         if singleLineW <= availableInline {
             renderSingleLine(text: text, font: font, caretX: x, caretY: y,
@@ -191,7 +197,11 @@ final class OverlayWindow: NSPanel {
         let textH = (text as NSString).size(withAttributes: [.font: font]).height
         let panelH = max(textH, caretHeight)
         let rawY = caretY - caretHeight          // panel bottom aligns with caret bottom
-        let fx = max(usable.minX, min(caretX, usable.maxX - panelW))
+        // Never position left of the caret — ghost text must always start AFTER it.
+        // The fit check in show() already guarantees the panel fits between the caret
+        // and the field's right border, so the old leftward clamp (which painted the
+        // ghost over already-typed text in narrow fields) is gone.
+        let fx = max(usable.minX, caretX)
         let fy = max(usable.minY, min(rawY, usable.maxY - panelH))
 
         fputs("overlay(1L): (\(Int(fx)),\(Int(fy))) \(Int(panelW))×\(Int(panelH)) \"\(text.prefix(30))\"\n", stderr)
@@ -260,6 +270,14 @@ final class OverlayWindow: NSPanel {
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
         alphaValue = 1
         orderFront(nil)
+    }
+
+    /// Visual dismissal ONLY — does not touch KeyCapture's pending completion. Used by
+    /// OverlayRouter when switching to the popup card: the completion stays alive (Tab
+    /// must keep working against the card), only the inline rendering goes away.
+    func orderOutOnly() {
+        alphaValue = 0
+        orderOut(nil)
     }
 
     // armStabilityGate: only true for acceptance/dismiss hides. After a paste the

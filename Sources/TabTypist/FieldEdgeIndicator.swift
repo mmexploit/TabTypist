@@ -53,19 +53,38 @@ final class FieldEdgeIndicator: NSPanel {
         SettingsWindowController.shared.show()
     }
 
-    func show(inputFrame: CGRect) {
+    /// `caretLineMidY` — vertical midpoint of the caret's line in Cocoa coords, when
+    /// known. In a tall editor (Notes, a full-window text view) the field's vertical
+    /// midpoint can be nowhere near the line being edited, so the logo tracks the
+    /// caret's line instead, clamped inside the field so a bogus caret rect can't
+    /// drag it away from the field entirely.
+    func show(inputFrame: CGRect, caretLineMidY: CGFloat? = nil) {
         guard inputFrame.width > 10 && inputFrame.height > 10 else { hide(); return }
         let size = Self.iconSize
         let gap: CGFloat = 4
 
-        // Anchor just outside the field's LEFT edge, vertically centered. If the field
-        // hugs the screen's left edge (no room outside), tuck the logo just inside so
-        // it stays visible instead of clipping off-screen.
+        // Anchor just outside the field's LEFT edge. If the field hugs the screen's
+        // left edge (no room outside), tuck the logo just inside so it stays visible
+        // instead of clipping off-screen.
         var fx = inputFrame.minX - size - gap
         if fx < 2 { fx = inputFrame.minX + gap }
-        let fy = inputFrame.midY - size / 2
 
-        setFrame(NSRect(x: fx, y: fy, width: size, height: size), display: true)
+        var fy = inputFrame.midY - size / 2
+        if let midY = caretLineMidY, inputFrame.height > size * 2 {
+            let clamped = min(max(midY, inputFrame.minY + size / 2), inputFrame.maxY - size / 2)
+            fy = clamped - size / 2
+        }
+
+        // Called on every poll so the logo tracks scrolling and window moves; skip the
+        // window churn when nothing actually moved.
+        let target = NSRect(x: fx, y: fy, width: size, height: size)
+        if isVisible,
+           abs(frame.origin.x - target.origin.x) < 1,
+           abs(frame.origin.y - target.origin.y) < 1 {
+            return
+        }
+
+        setFrame(target, display: true)
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
         alphaValue = 1
         orderFront(nil)
