@@ -22,14 +22,18 @@ final class AXMonitor: @unchecked Sendable {
     // attached to the new app's completions.
     private var latestVisualContext: String = ""
     private var latestVisualContextBundle: String = ""
-    // OCR is expensive (ScreenCaptureKit + Vision). Throttle it: at most one capture per
-    // `ocrMinInterval`, and never overlap captures (`ocrInFlight`) — overlapping requests
-    // are what made it run constantly and balloon memory. An app switch (`lastOCRBundle`
-    // changes) resets the throttle once so the new app gets fresh context immediately.
-    private var lastOCRCapture: Date = .distantPast
-    private var lastOCRBundle: String = ""
+    // OCR is expensive (ScreenCaptureKit + Vision). Cadence matches Cotabby/Cotypist:
+    // capture ONCE per focused field and reuse that excerpt for the field's whole
+    // lifetime — it survives normal typing inside the same input. We re-capture only
+    // when the focused field actually CHANGES (`lastOCRFieldKey`), never on a periodic
+    // timer. The previous every-2s re-capture while typing is what churned memory.
+    // `pendingOCRWork` enforces a short focus-settle window so a flapping focus
+    // (Electron/Chromium lose+re-acquire the AX element) runs the pipeline once it's
+    // stable, not once per flap. `ocrInFlight` still prevents overlapping captures.
+    private var lastOCRFieldKey: String = ""
+    private var pendingOCRWork: DispatchWorkItem?
     private var ocrInFlight: Bool = false
-    private static let ocrMinInterval: TimeInterval = 2.0
+    private static let ocrSettleInterval: TimeInterval = 0.25  // Cotabby's 250 ms settle
 
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
     private var currentPollInterval: TimeInterval = 0.08
@@ -90,17 +94,45 @@ final class AXMonitor: @unchecked Sendable {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
-    /// Hide the on-screen affordances (ghost-text overlay + field-edge "active" marker)
-    /// without touching poll bookkeeping (lastPrefix / lastBundleId). Called from the
-    /// "focus is no longer on a text field" early-returns in poll() so the indicator
-    /// doesn't stay stuck on the old field when the user clicks another window or a
-    /// non-text region of the same app. UI-only, so it's safe even when a transient
-    /// helper process briefly owns the frontmost slot — the next real poll re-shows it.
-    private func hideAffordances() {
+    /// Hide ONLY the field-edge "active" logo when focus is no longer on a text field,
+    /// so it doesn't stay stuck on the old field after the user clicks another window or
+    /// a non-text region of the same app. Crucially this must NOT hide the ghost-text
+    /// overlay: `OverlayWindow.hide()` calls `KeyCapture.clearCompletion()`, so hiding it
+    /// here would wipe the active completion and make Tab fall through. The overlay keeps
+    /// its own hide paths (prefix change, app switch, accept/dismiss). UI-only — touches
+    /// no poll bookkeeping (lastPrefix / lastBundleId).
+    private func hideFieldIndicator() {
         DispatchQueue.main.async {
-            OverlayWindow.shared.hide()
             FieldEdgeIndicator.shared.hide()
         }
+    }
+
+    /// Schedule a single screenshot→OCR capture for a newly focused field, after a
+    /// short settle window (Cotabby's 250 ms). A rapid field switch cancels the prior
+    /// pending capture and re-arms, so a churning/flapping focus runs the pipeline once
+    /// it stabilises rather than once per flap. The result is cached and reused for
+    /// every completion in that field — no re-capture while the user keeps typing.
+    private func scheduleFieldOCR(pid: pid_t, field: CGRect, bundle: String, fieldKey: String) {
+        pendingOCRWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // Bail if focus moved on during the settle window, or a capture is in flight.
+            guard self.lastOCRFieldKey == fieldKey, !self.ocrInFlight else { return }
+            self.ocrInFlight = true
+            Task.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                let text = await VisualContextCapture.shared.capture(pid: pid, fieldFrameCG: field)
+                await MainActor.run {
+                    if let text = text {
+                        self.latestVisualContext = text
+                        self.latestVisualContextBundle = bundle
+                    }
+                    self.ocrInFlight = false
+                }
+            }
+        }
+        pendingOCRWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + AXMonitor.ocrSettleInterval, execute: work)
     }
 
     // ── AXObserver lifecycle ──────────────────────────────────────────────────
@@ -169,7 +201,7 @@ final class AXMonitor: @unchecked Sendable {
         // No focused element in the (non-self) frontmost app: focus left any text
         // field — e.g. user clicked the desktop or a window with nothing editable
         // focused. Clear the stale indicator instead of leaving it pinned.
-        guard result == .success, let element = focusedElement else { hideAffordances(); return }
+        guard result == .success, let element = focusedElement else { hideFieldIndicator(); return }
         let axElement = element as! AXUIElement
 
         // Register AXObserver when the app changes — ensures immediate notification
@@ -185,11 +217,11 @@ final class AXMonitor: @unchecked Sendable {
 
         // Get the full text value. A focused element that exposes no string value is
         // not a text field (button, list row, web link, etc.) — the user moved focus
-        // off the field within the same app, so hide the stale indicator/overlay.
+        // off the field within the same app, so hide the stale indicator.
         var textValue: AnyObject?
         guard AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &textValue) == .success,
               let fullText = textValue as? String
-        else { hideAffordances(); return }
+        else { hideFieldIndicator(); return }
 
         // Get the selected range to find caret position
         var rangeValue: AnyObject?
@@ -413,34 +445,22 @@ final class AXMonitor: @unchecked Sendable {
         }
         #endif // canImport(FoundationModels)
 
-        // Kick off OCR for the next contextUpdate cycle (non-blocking), THROTTLED.
-        // Both frames are AX coords (top-left origin), which is what ScreenCaptureKit's
+        // Capture OCR once per focused field, then reuse it (Cotabby's model). Both
+        // frames are AX coords (top-left origin), which is what ScreenCaptureKit's
         // sourceRect also uses — so no flips are needed downstream.
-        let ocrField = inputFrameAX
-        let ocrPid = pid
-        let ocrBundle = bundleId
-        // App switch → allow one immediate capture (reset the throttle once); otherwise
-        // limit to one capture per ocrMinInterval and never while another is in flight.
-        if lastOCRBundle != bundleId {
-            lastOCRBundle = bundleId
-            lastOCRCapture = .distantPast
-        }
-        if !ocrInFlight && Date().timeIntervalSince(lastOCRCapture) >= AXMonitor.ocrMinInterval {
-            ocrInFlight = true
-            lastOCRCapture = Date()
-            Task.detached(priority: .utility) { [weak self] in
-                guard let self else { return }
-                let text = await VisualContextCapture.shared.capture(
-                    pid: ocrPid, fieldFrameCG: ocrField
-                )
-                await MainActor.run {
-                    if let text = text {
-                        self.latestVisualContext = text
-                        self.latestVisualContextBundle = ocrBundle
-                    }
-                    self.ocrInFlight = false
-                }
-            }
+        //
+        // Field identity = bundle + field frame + the AX element's identity. The frame
+        // changes on a field switch; CFHash(element) disambiguates same-frame fields.
+        // While you keep typing in one field this key is stable, so no re-capture fires.
+        let fieldKey = "\(bundleId)|\(Int(inputX)),\(Int(inputY)),\(Int(inputW)),\(Int(inputH))|\(CFHash(axElement))"
+        if fieldKey != lastOCRFieldKey {
+            lastOCRFieldKey = fieldKey
+            // Drop the previous field's excerpt so it can't leak into this field's
+            // prompt; the new capture repopulates it once ready (Cotabby returns
+            // nothing until the new field's capture completes).
+            latestVisualContext = ""
+            latestVisualContextBundle = ""
+            scheduleFieldOCR(pid: pid, field: inputFrameAX, bundle: bundleId, fieldKey: fieldKey)
         }
         // Only reuse the cached OCR if it belongs to the app we're now typing in —
         // otherwise send nothing rather than another app's stale context.
