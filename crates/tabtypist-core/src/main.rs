@@ -304,10 +304,19 @@ async fn main() -> Result<()> {
                             info!("suppressing completion that duplicates trailing text");
                             continue 'outer;
                         }
+                        // Preceding-duplication guard: never surface a completion that
+                        // retypes a sentence already sitting just before the caret —
+                        // the model re-emitting the suggestion the user just accepted.
+                        if model_runtime::duplicates_preceding_text(&text, &update.prefix) {
+                            info!("suppressing completion that repeats preceding text");
+                            continue 'outer;
+                        }
                         // Repetition guard: if this is the same suggestion we just
-                        // showed (typically right after the user accepted it), don't
+                        // showed (folded — case/punctuation drift still counts), don't
                         // surface it again — that's the "keeps repeating" loop.
-                        if last_shown.as_deref() == Some(text.as_str()) {
+                        if last_shown.as_deref().map(model_runtime::fold_alnum)
+                            == Some(model_runtime::fold_alnum(&text))
+                        {
                             info!("suppressing repeated completion {:?}", text);
                             continue 'outer;
                         }
@@ -384,7 +393,14 @@ async fn main() -> Result<()> {
 }
 
 fn should_trigger_completion(prefix: &str) -> bool {
-    !prefix.trim().is_empty()
+    if prefix.trim().is_empty() {
+        return false;
+    }
+    // Hold back right after a finished sentence (terminator + optional whitespace):
+    // with zero anchor for the next thought, the model invents a generic new sentence.
+    // Suggestions resume the moment the user types the first character of the next
+    // sentence; abbreviations/decimals don't count as finished (ends_sentence).
+    !model_runtime::ends_sentence(prefix)
 }
 
 /// Detect dominant non-Latin script in the last 200 chars of `prefix`.
@@ -575,9 +591,10 @@ async fn handle_message(
             // overlay sitting at its old position for ~1 s while new inference runs, which
             // is far less broken than Tab not accepting.
 
-            // Suppress suggestions when there's not enough context for a useful completion.
-            // Require at least 2 words in the current sentence fragment so the model has
-            // a meaningful signal — avoids noisy single-word or empty-prefix suggestions.
+            // Suppress suggestions when there's not enough context for a useful
+            // completion: empty/whitespace prefixes, and a caret sitting right after a
+            // finished sentence — there the model has no anchor and rushes into an
+            // invented new sentence.
             if !should_trigger_completion(&prefix) {
                 let _ = ctx_tx.send(None);
                 let _ = transport.lock().await

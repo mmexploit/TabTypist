@@ -296,6 +296,7 @@ fn do_complete(
     let endoftext_id = resolve_token(model, "<|endoftext|>");
 
     let mut sampler = completion_sampler();
+    seed_penalty_window(&mut sampler, &new_tokens);
 
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut result = String::new();
@@ -538,6 +539,7 @@ fn do_complete_instruct(
     // request). The connector-loop failure mode is handled by the word-stutter guard
     // below rather than a heavy repeat penalty, which distorted word choice.
     let mut sampler = completion_sampler();
+    seed_penalty_window(&mut sampler, &tokens);
 
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut result = String::new();
@@ -789,6 +791,9 @@ fn token_logprob(
 /// against degenerate instant stops like a lone leading period (cotabby DecodeStopPolicy).
 const SENTENCE_STOP_MIN_TOKENS: usize = 2;
 
+/// Tokens the repeat-penalty stage remembers (its `penalty_last_n` ring buffer).
+const PENALTY_WINDOW: usize = 64;
+
 /// Shared sampler chain for both inference paths — cotabby's shipped SamplingConfig:
 /// gentle repeat penalty (1.05; heavier values distort word choice mid-sentence),
 /// top-k 20 → top-p 0.7 → min-p 0.08 → temp 0.1, then dist with a FIXED seed so the
@@ -796,13 +801,28 @@ const SENTENCE_STOP_MIN_TOKENS: usize = 2;
 fn completion_sampler() -> llama_cpp_2::sampling::LlamaSampler {
     use llama_cpp_2::sampling::LlamaSampler;
     LlamaSampler::chain_simple([
-        LlamaSampler::penalties(64, 1.05, 0.0, 0.0),
+        LlamaSampler::penalties(PENALTY_WINDOW as i32, 1.05, 0.0, 0.0),
         LlamaSampler::top_k(20),
         LlamaSampler::top_p(0.7, 1),
         LlamaSampler::min_p(0.08, 1),
         LlamaSampler::temp(0.1),
         LlamaSampler::dist(0x00C0_FFEE),
     ])
+}
+
+/// Feed the prompt tail into the sampler's repeat-penalty ring buffer. The penalties
+/// stage only sees tokens passed through `accept()`, so without this it starts every
+/// generation blind to the text the user just wrote and will cheerfully re-emit the
+/// sentence they just finished (or just accepted). Seeding the last PENALTY_WINDOW
+/// prompt tokens makes a verbatim repeat pay the penalty from token one.
+fn seed_penalty_window(
+    sampler: &mut llama_cpp_2::sampling::LlamaSampler,
+    prompt_tokens: &[LlamaToken],
+) {
+    let start = prompt_tokens.len().saturating_sub(PENALTY_WINDOW);
+    for &tok in &prompt_tokens[start..] {
+        sampler.accept(tok);
+    }
 }
 
 /// Length of the longest shared token prefix between the cached and new prompt.
@@ -947,7 +967,7 @@ fn is_terminal_period(text: &str, period_idx: usize) -> bool {
 /// Whether `text` ends at a real sentence boundary: after skipping trailing whitespace
 /// and a run of closing quotes/brackets, the last character is `!`, `?`, or a terminal
 /// period (cotabby SentenceBoundaryClassifier.endsSentence).
-fn ends_sentence(text: &str) -> bool {
+pub fn ends_sentence(text: &str) -> bool {
     let mut s = text.trim_end();
     while let Some(c) = s.chars().last() {
         if is_closing_punct(c) {
@@ -1024,6 +1044,37 @@ pub fn truncate_at_blank_line(mut text: String) -> String {
         text.truncate(e);
     }
     text.trim_end().to_string()
+}
+
+/// Lowercased, alphanumerics-only view of `s`, used for duplication checks so case,
+/// spacing, and punctuation drift cannot defeat a match.
+pub fn fold_alnum(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// True when `completion` retypes text the user already wrote just before the caret —
+/// the base-model loop of re-emitting the sentence that was just finished (typically
+/// the suggestion the user just accepted). Folded comparison; short completions are
+/// exempt because brief common phrases legitimately recur in normal writing.
+pub fn duplicates_preceding_text(completion: &str, prefix: &str) -> bool {
+    const MIN_FOLDED_LEN: usize = 10;
+    const PREFIX_TAIL_CHARS: usize = 600;
+
+    let fc = fold_alnum(completion);
+    if fc.chars().count() < MIN_FOLDED_LEN {
+        return false;
+    }
+    let tail: String = {
+        let count = prefix.chars().count();
+        prefix
+            .chars()
+            .skip(count.saturating_sub(PREFIX_TAIL_CHARS))
+            .collect()
+    };
+    fold_alnum(&tail).contains(&fc)
 }
 
 /// True when `completion` would mostly retype text that already follows the caret
@@ -1299,6 +1350,32 @@ mod tests {
     #[test]
     fn trailing_dup_ignores_short_coincidences() {
         assert!(!duplicates_trailing_text("th", "the rest"));
+    }
+
+    // ── preceding-duplication filter ──────────────────────────────────────────
+
+    #[test]
+    fn preceding_dup_detects_repeat_of_last_sentence() {
+        let prefix = "Let me know if that works. The meeting is at 5pm.";
+        assert!(duplicates_preceding_text(" The meeting is at 5pm.", prefix));
+    }
+
+    #[test]
+    fn preceding_dup_ignores_case_spacing_and_punctuation() {
+        let prefix = "Let me know if that works. The meeting is at 5pm.";
+        assert!(duplicates_preceding_text("the meeting is at 5 PM", prefix));
+    }
+
+    #[test]
+    fn preceding_dup_allows_fresh_continuation() {
+        let prefix = "Let me know if that works. The meeting is at 5pm.";
+        assert!(!duplicates_preceding_text(" I will send the agenda beforehand.", prefix));
+    }
+
+    #[test]
+    fn preceding_dup_exempts_short_common_phrases() {
+        let prefix = "Let me know if that works. The meeting is at 5pm.";
+        assert!(!duplicates_preceding_text(" know if", prefix));
     }
 
     // ── prefix windowing ──────────────────────────────────────────────────────
