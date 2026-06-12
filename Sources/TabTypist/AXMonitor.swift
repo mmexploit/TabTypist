@@ -22,18 +22,22 @@ final class AXMonitor: @unchecked Sendable {
     // attached to the new app's completions.
     private var latestVisualContext: String = ""
     private var latestVisualContextBundle: String = ""
-    // OCR is expensive (ScreenCaptureKit + Vision). Cadence matches Cotabby/Cotypist:
-    // capture ONCE per focused field and reuse that excerpt for the field's whole
-    // lifetime — it survives normal typing inside the same input. We re-capture only
-    // when the focused field actually CHANGES (`lastOCRFieldKey`), never on a periodic
-    // timer. The previous every-2s re-capture while typing is what churned memory.
+    // OCR is expensive (ScreenCaptureKit + Vision). Capture once per focused field,
+    // then refresh only while the user is actively typing AND the cached excerpt has
+    // aged past `ocrRefreshInterval` — in a live chat, new messages arrive while you
+    // compose, and a focus-time-only snapshot goes stale (the message being replied to
+    // scrolls away; the prompt keeps describing the previous screen). The age gate
+    // keeps this far from the old every-2s re-capture that churned memory: worst case
+    // is a handful of captures per minute, and an idle field re-captures nothing.
     // `pendingOCRWork` enforces a short focus-settle window so a flapping focus
     // (Electron/Chromium lose+re-acquire the AX element) runs the pipeline once it's
     // stable, not once per flap. `ocrInFlight` still prevents overlapping captures.
     private var lastOCRFieldKey: String = ""
     private var pendingOCRWork: DispatchWorkItem?
     private var ocrInFlight: Bool = false
+    private var lastOCRCompletedAt: Date = .distantPast
     private static let ocrSettleInterval: TimeInterval = 0.25  // Cotabby's 250 ms settle
+    private static let ocrRefreshInterval: TimeInterval = 15
 
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
     private var currentPollInterval: TimeInterval = 0.08
@@ -113,7 +117,9 @@ final class AXMonitor: @unchecked Sendable {
     /// pending capture and re-arms, so a churning/flapping focus runs the pipeline once
     /// it stabilises rather than once per flap. The result is cached and reused for
     /// every completion in that field — no re-capture while the user keeps typing.
-    private func scheduleFieldOCR(pid: pid_t, field: CGRect, bundle: String, fieldKey: String) {
+    private func scheduleFieldOCR(
+        pid: pid_t, field: CGRect, bundle: String, fieldKey: String, fieldText: String
+    ) {
         pendingOCRWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -122,12 +128,17 @@ final class AXMonitor: @unchecked Sendable {
             self.ocrInFlight = true
             Task.detached(priority: .utility) { [weak self] in
                 guard let self else { return }
-                let text = await VisualContextCapture.shared.capture(pid: pid, fieldFrameCG: field)
+                let text = await VisualContextCapture.shared.capture(
+                    pid: pid, fieldFrameCG: field, fieldText: fieldText
+                )
                 await MainActor.run {
                     if let text = text {
                         self.latestVisualContext = text
                         self.latestVisualContextBundle = bundle
                     }
+                    // Stamp even on failure so a field where capture can't succeed
+                    // (no permission, no text) doesn't retry on every prefix change.
+                    self.lastOCRCompletedAt = Date()
                     self.ocrInFlight = false
                 }
             }
@@ -498,7 +509,16 @@ final class AXMonitor: @unchecked Sendable {
             // nothing until the new field's capture completes).
             latestVisualContext = ""
             latestVisualContextBundle = ""
-            scheduleFieldOCR(pid: pid, field: inputFrameAX, bundle: bundleId, fieldKey: fieldKey)
+            scheduleFieldOCR(pid: pid, field: inputFrameAX, bundle: bundleId,
+                             fieldKey: fieldKey, fieldText: fullText)
+        } else if !ocrInFlight,
+                  Date().timeIntervalSince(lastOCRCompletedAt) > AXMonitor.ocrRefreshInterval {
+            // Same field, still typing (we only reach here on a prefix change), but the
+            // excerpt has aged: refresh so the prompt describes the CURRENT screen, not
+            // the one from when the field was first focused. The old excerpt stays in
+            // place until the new capture lands.
+            scheduleFieldOCR(pid: pid, field: inputFrameAX, bundle: bundleId,
+                             fieldKey: fieldKey, fieldText: fullText)
         }
         // Only reuse the cached OCR if it belongs to the app we're now typing in —
         // otherwise send nothing rather than another app's stale context.

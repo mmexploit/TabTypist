@@ -40,6 +40,21 @@ struct ContextUpdate {
     clipboard_context: String, // clipboard text when user has opted in; "" otherwise
 }
 
+/// Prediction debounce derived from the last observed generation latency (cotabby
+/// DebouncePolicy). cotabby's bands are 15/25/55 ms, tuned for sub-1B models with a
+/// 20 ms configured fallback; ours add a heavier tier and keep the 280 ms fallback
+/// for anything slower, because on a multi-billion-param model letting keystrokes
+/// pile doomed generations onto a decoder that cannot keep up drags the machine.
+fn adaptive_debounce_ms(last_latency_ms: Option<u64>, fallback: u64) -> u64 {
+    match last_latency_ms {
+        Some(ms) if ms == 0 => fallback,
+        Some(ms) if ms <= 70 => 25,
+        Some(ms) if ms <= 140 => 60,
+        Some(ms) if ms <= 300 => 140,
+        _ => fallback,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -148,18 +163,24 @@ async fn main() -> Result<()> {
             // the text the user just accepted (now part of the prefix).
             let mut last_shown: Option<String> = None;
 
-            // Debounce before kicking off inference. cotabby ships 20 ms, but that's
-            // tuned for sub-1B models; on a multi-billion-param model (e.g. Qwen3 4B)
-            // every micro-pause between keystrokes launches a full decode, so rapid
-            // typing fires heavy back-to-back inferences and the machine visibly drags.
-            // Default to 280 ms (fire shortly after the user actually pauses), and
-            // allow TABTYPIST_DEBOUNCE_MS to override it for tuning without a rebuild.
-            let debounce_ms: u64 = std::env::var("TABTYPIST_DEBOUNCE_MS")
+            // Debounce before kicking off inference. A fixed value serves two masters
+            // badly: a sub-1B model could fire after ~20 ms, while on a multi-billion-
+            // param model (e.g. Qwen3 4B) every micro-pause launches a full decode and
+            // rapid typing drags the machine. cotabby's DebouncePolicy keys the debounce
+            // to the last observed generation latency instead — fast model, snappy
+            // trigger; slow model, calm trigger (each cancelled decode still costs a
+            // setup + teardown). Until a first latency exists the conservative 280 ms
+            // fallback applies. TABTYPIST_DEBOUNCE_MS pins a fixed value for tuning.
+            const FALLBACK_DEBOUNCE_MS: u64 = 280;
+            let fixed_debounce_ms: Option<u64> = std::env::var("TABTYPIST_DEBOUNCE_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .filter(|&ms| ms > 0)
-                .unwrap_or(280);
-            info!("completion debounce: {debounce_ms} ms");
+                .filter(|&ms| ms > 0);
+            let mut last_latency_ms: Option<u64> = None;
+            match fixed_debounce_ms {
+                Some(ms) => info!("completion debounce: fixed {ms} ms"),
+                None => info!("completion debounce: adaptive (fallback {FALLBACK_DEBOUNCE_MS} ms)"),
+            }
 
             'outer: loop {
                 // Block until a new context update arrives.
@@ -170,6 +191,8 @@ async fn main() -> Result<()> {
                 // only fires once typing pauses. Collapsing keystroke bursts here is
                 // what keeps a heavy model from running a decode per keystroke. A
                 // superseded in-flight generation is still cancelled cooperatively.
+                let debounce_ms = fixed_debounce_ms
+                    .unwrap_or_else(|| adaptive_debounce_ms(last_latency_ms, FALLBACK_DEBOUNCE_MS));
                 'debounce: loop {
                     tokio::select! {
                         result = rx.changed() => {
@@ -207,8 +230,15 @@ async fn main() -> Result<()> {
                     settings_store::CompletionLength::Long   => "Write up to 20 words.".into(),
                 };
 
-                // Build full context for instruct-model personalisation.
-                let clipboard_c = if s.clipboard_context_enabled {
+                // Build full context for instruct-model personalisation. Clipboard is
+                // relevance-gated (cotabby ClipboardRelevanceFilter): unless it shares
+                // at least one significant token with what the user is writing, it's
+                // unrelated content that steers the completion off the sentence in hand.
+                let clipboard_c = if s.clipboard_context_enabled
+                    && model_runtime::shares_significant_token(
+                        &update.clipboard_context,
+                        &update.prefix,
+                    ) {
                     update.clipboard_context.clone()
                 } else {
                     String::new()
@@ -255,6 +285,7 @@ async fn main() -> Result<()> {
                 if let Some(flag) = &cancel {
                     flag.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
+                let gen_started = std::time::Instant::now();
                 let mut task = tokio::task::spawn_blocking(
                     move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)
                 );
@@ -281,6 +312,9 @@ async fn main() -> Result<()> {
                     info!("superseded during inference — regenerating with latest context");
                     continue 'process;
                 }
+                // Feed the adaptive debounce. Only completed generations count — a
+                // cancelled decode's elapsed time underestimates the model's real cost.
+                last_latency_ms = Some(gen_started.elapsed().as_millis() as u64);
 
                 // Stale-completion guard (backstop): a newer prefix can still land in the
                 // window between the decode finishing and the select waking up.
@@ -297,11 +331,40 @@ async fn main() -> Result<()> {
                             info!("completion empty after truncation — suppressing overlay");
                             continue 'outer;
                         }
+                        // Insertion safety gate (cotabby): U+FFFD, control characters,
+                        // or whitespace-only output is corruption, never a completion.
+                        if !model_runtime::is_safe_to_insert(&text) {
+                            info!("suppressing unsafe completion {:?}", text);
+                            continue 'outer;
+                        }
+                        // Junk-run guard (cotabby CompletionSeamGuard): a run of 4+
+                        // identical punctuation/symbol chars ("....", "$$$$") is decode
+                        // noise — unless it merely extends a divider the user already
+                        // has at the caret.
+                        if model_runtime::introduces_junk_punctuation_run(&text, &update.prefix) {
+                            info!("suppressing junk punctuation run {:?}", text);
+                            continue 'outer;
+                        }
+                        // Word-continuation coherence: mid-word prefixes must be
+                        // finished, not abandoned for a new capitalized sentence pulled
+                        // from the background context.
+                        if model_runtime::breaks_word_continuation(&text, &update.prefix) {
+                            info!("suppressing completion that abandons the current word {:?}", text);
+                            continue 'outer;
+                        }
                         // Trailing-duplication guard (cotabby): never surface a completion
                         // that mostly retypes the text already after the caret — accepting
                         // it would insert a duplicate.
                         if model_runtime::duplicates_trailing_text(&text, &update.suffix) {
                             info!("suppressing completion that duplicates trailing text");
+                            continue 'outer;
+                        }
+                        // Transcript-mimicry guard: a clock time in the completion when
+                        // the user's own text has none means the model copied chat-chrome
+                        // timestamps from the screen context instead of continuing the
+                        // sentence — never a structurally valid suggestion.
+                        if model_runtime::mimics_transcript_format(&text, &update.prefix) {
+                            info!("suppressing transcript-format completion {:?}", text);
                             continue 'outer;
                         }
                         // Preceding-duplication guard: never surface a completion that

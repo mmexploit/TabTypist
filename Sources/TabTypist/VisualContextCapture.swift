@@ -23,8 +23,21 @@ final class VisualContextCapture: @unchecked Sendable {
     private static let horizontalPadding: CGFloat = 160
     /// Height of the band captured ABOVE the field, in display points.
     private static let verticalContextHeight: CGFloat = 800
-    /// Downsample very large Retina captures before OCR to keep latency bounded.
-    private static let maxImageDimension = 1600
+    /// Downsample very large Retina captures before OCR to keep latency bounded. Vision's
+    /// accurate mode benefits from pixels, but its cost scales with pixel area and a Retina
+    /// capture of the band arrives well above this cap either way; 1200 keeps typical
+    /// 11–13pt UI text comfortably above the recognition floor while cutting the Vision
+    /// workload ~44% versus the previous 1600 (cotabby's right-sizing).
+    private static let maxImageDimension = 1200
+
+    /// Recent Vision extractions keyed by a pixel hash of the captured crop, so the
+    /// age-gated refresh while typing skips the Vision pass — the dominant cost of this
+    /// pipeline — when the screen hasn't actually changed (idle chat, static document).
+    /// Only the raw geometry-filtered lines are cached: hygiene and capping rerun against
+    /// the live field text below, so a hit stays identical to re-OCRing the same pixels.
+    /// Single-flight access is guaranteed by AXMonitor's `ocrInFlight` gate.
+    private var extractionCache: [(hash: UInt64, lines: [OCRHygiene.Line])] = []
+    private static let extractionCacheLimit = 4
 
     private init() {}
 
@@ -32,8 +45,10 @@ final class VisualContextCapture: @unchecked Sendable {
 
     /// `fieldFrameCG` is the focused field's bounds in CG global coords (top-left origin),
     /// i.e. the raw AX `AXFrame`. `pid` identifies the focused app so we can capture its
-    /// window in isolation. Returns nil if permission is missing or no text is found.
-    func capture(pid: pid_t, fieldFrameCG: CGRect) async -> String? {
+    /// window in isolation. `fieldText` is the field's current contents, used to strip
+    /// OCR lines that merely re-read what the user already typed. Returns nil if
+    /// permission is missing or no text is found.
+    func capture(pid: pid_t, fieldFrameCG: CGRect, fieldText: String = "") async -> String? {
         guard CGPreflightScreenCaptureAccess() else {
             fputs("OCR: skipped — Screen Recording permission not granted\n", stderr)
             return nil
@@ -56,7 +71,28 @@ final class VisualContextCapture: @unchecked Sendable {
             fputs("OCR: skipped — ScreenCaptureKit returned no image\n", stderr)
             return nil
         }
-        return await recogniseText(in: image)
+        // The field's horizontal span inside the crop, normalized to [0,1] (Vision's
+        // boundingBox space). Used to discard text from neighbouring columns.
+        let spanLo = max(0, (fieldFrameCG.minX - sourceRect.minX) / sourceRect.width)
+        let spanHi = min(1, (fieldFrameCG.maxX - sourceRect.minX) / sourceRect.width)
+        let fieldSpan = spanLo...max(spanLo, spanHi)
+
+        // Identical pixels OCR identically — reuse the cached extraction and skip the
+        // Vision pass. (The geometry filter inside `recogniseLines` depends on the field
+        // span, but identical pixels from the cache's small window imply the same crop
+        // around the same field, so the cached lines were filtered with the same span.)
+        let lines: [OCRHygiene.Line]
+        let pixelHash = Self.pixelHash(of: image)
+        if let pixelHash, let cached = cachedExtraction(for: pixelHash) {
+            lines = cached
+        } else {
+            lines = await recogniseLines(in: image, fieldSpan: fieldSpan)
+            storeExtraction(lines, for: pixelHash)
+        }
+
+        // Hygiene + capping rerun even on a cache hit: the field-echo strip compares
+        // against the user's CURRENT text, which changes between captures.
+        return excerpt(from: lines, fieldText: fieldText)
     }
 
     // MARK: – Window discovery
@@ -116,42 +152,124 @@ final class VisualContextCapture: @unchecked Sendable {
 
     // MARK: – OCR
 
-    private func recogniseText(in image: CGImage) async -> String? {
+    /// Vision pass plus geometric filtering — everything that depends only on the pixels,
+    /// so the result is cacheable by pixel hash. Hygiene (which depends on the live field
+    /// text) happens in `excerpt(from:fieldText:)`.
+    private func recogniseLines(
+        in image: CGImage, fieldSpan: ClosedRange<CGFloat>
+    ) async -> [OCRHygiene.Line] {
         let prepared = downsampled(image)
         return await withCheckedContinuation { continuation in
             let request = VNRecognizeTextRequest { request, _ in
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
-                // Reading order: top-to-bottom (bands), then left-to-right within a band.
+                // Column filter: keep only text whose box overlaps the field's own
+                // column. The crop's horizontal padding can reach into a neighbouring
+                // pane (Slack's channel sidebar), and the band sort below would then
+                // splice sidebar rows INTO message sentences ("Can you try | Elizabeth
+                // Wheeler | again?"). The field column is where the content the user is
+                // replying to lives; everything beside it is navigation chrome.
+                let lo = fieldSpan.lowerBound - 0.02, hi = fieldSpan.upperBound + 0.02
                 let lines = observations
+                    .filter { obs in
+                        let box = obs.boundingBox
+                        // Drop lines touching the crop's bottom edge: they sit half
+                        // behind the input field / crop boundary and OCR garbles the
+                        // clipped glyphs into nonsense words.
+                        return box.maxX >= lo && box.minX <= hi && box.minY > 0.012
+                    }
+                    // Reading order: top-to-bottom (bands), then left-to-right within a band.
                     .sorted {
                         if abs($0.boundingBox.minY - $1.boundingBox.minY) > 0.02 {
                             return $0.boundingBox.minY > $1.boundingBox.minY
                         }
                         return $0.boundingBox.minX < $1.boundingBox.minX
                     }
-                    .compactMap { $0.topCandidates(1).first?.string }
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let joined = lines.joined(separator: "\n")
-                // Keep the tail (nearest the field = most recent in a chat).
-                let capped = joined.count <= Self.maxChars
-                    ? joined
-                    : String(joined.suffix(Self.maxChars))
-                let flat = capped.replacingOccurrences(of: "\n", with: " | ")
-                fputs("OCR: \(lines.count) lines, \(capped.count) chars: \(flat)\n", stderr)
-                continuation.resume(returning: capped.isEmpty ? nil : capped)
+                    .compactMap { obs -> OCRHygiene.Line? in
+                        guard let top = obs.topCandidates(1).first else { return nil }
+                        let trimmed = top.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return nil }
+                        return OCRHygiene.Line(text: trimmed, confidence: top.confidence)
+                    }
+                continuation.resume(returning: lines)
             }
-            // Accurate, no language correction (it mangles names/chat slang), and a low
-            // minimum text height so small chat text is recognised in full.
+            // Accurate, with language correction: this text only conditions the prompt
+            // (it is never shown or inserted), and correction cuts garbled recognitions
+            // at the source — the hygiene filters downstream can only drop junk, not
+            // repair it (cotabby reversed its earlier correction-off choice for the
+            // same reason). A low minimum text height keeps small chat text readable.
             request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
+            request.usesLanguageCorrection = true
             request.minimumTextHeight = 0.008
 
             do {
                 try VNImageRequestHandler(cgImage: prepared, options: [:]).perform([request])
             } catch {
-                continuation.resume(returning: nil)
+                continuation.resume(returning: [])
             }
+        }
+    }
+
+    /// Structural hygiene + prompt budgeting over the recognised lines. Reruns on every
+    /// capture — including pixel-cache hits — because the field-echo strip compares
+    /// against the user's current text.
+    private func excerpt(from raw: [OCRHygiene.Line], fieldText: String) -> String? {
+        // Structural hygiene (general, app-agnostic): drops low-confidence and
+        // corrupted lines, symbol/glyph noise, digit-substituted misreads,
+        // timestamp/view-count chrome, and echoes of the user's own field text.
+        let lines = OCRHygiene.clean(raw, fieldText: fieldText)
+        let joined = lines.joined(separator: "\n")
+        // Keep the tail (nearest the field = most recent in a chat). Cut at a
+        // line boundary so the excerpt never starts mid-sentence.
+        var capped = joined.count <= Self.maxChars
+            ? joined
+            : String(joined.suffix(Self.maxChars))
+        if capped.count < joined.count, let nl = capped.firstIndex(of: "\n") {
+            capped = String(capped[capped.index(after: nl)...])
+        }
+        let flat = capped.replacingOccurrences(of: "\n", with: " | ")
+        fputs("OCR: \(lines.count) lines, \(capped.count) chars: \(flat)\n", stderr)
+        return capped.isEmpty ? nil : capped
+    }
+
+    // MARK: – Pixel-hash extraction cache
+
+    /// FNV-1a over a strided sample of the image bytes, mixed with the dimensions.
+    /// Sampling keeps the hash sub-millisecond on Retina crops while touching every row;
+    /// any real content change moves enough antialiased pixels that a stride collision is
+    /// vanishingly unlikely, and the worst case of one is reusing OCR text for a window
+    /// whose pixels barely changed. The stride is 17, not 16: with 4-byte pixels a
+    /// multiple-of-4 stride lands on the same colour channel forever, so a chroma-only
+    /// change (theme toggle with unchanged luminance) could hash identically; a stride
+    /// coprime with the pixel size cycles through all four channels. `nil` (no readable
+    /// backing data) simply disables caching.
+    private static func pixelHash(of image: CGImage) -> UInt64? {
+        guard let data = image.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else {
+            return nil
+        }
+        let length = CFDataGetLength(data)
+        let prime: UInt64 = 0x0000_0100_0000_01B3
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        var index = 0
+        while index < length {
+            hash = (hash ^ UInt64(bytes[index])) &* prime
+            index += 17
+        }
+        hash = (hash ^ UInt64(image.width)) &* prime
+        hash = (hash ^ UInt64(image.height)) &* prime
+        return hash
+    }
+
+    private func cachedExtraction(for hash: UInt64) -> [OCRHygiene.Line]? {
+        extractionCache.first(where: { $0.hash == hash })?.lines
+    }
+
+    private func storeExtraction(_ lines: [OCRHygiene.Line], for hash: UInt64?) {
+        guard let hash else { return }
+        extractionCache.removeAll { $0.hash == hash }
+        extractionCache.append((hash, lines))
+        if extractionCache.count > Self.extractionCacheLimit {
+            extractionCache.removeFirst(extractionCache.count - Self.extractionCacheLimit)
         }
     }
 

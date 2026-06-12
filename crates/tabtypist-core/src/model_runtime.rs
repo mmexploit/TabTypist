@@ -304,12 +304,19 @@ fn do_complete(
 
     let mut token = sampler.sample(ctx, sample_idx);
     sampler.accept(token);
+    let mut argmax_eog = argmax_is_eog(model, ctx, sample_idx);
 
     for _ in 0..max_tokens {
         // Cooperative cancellation: a newer keystroke superseded this request, so
         // stop decoding and free the inference thread for it. The KV trim below
         // still runs, leaving the cache valid for the next (reusing) request.
         if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        // The model's most-likely token is end-of-generation even though the
+        // sampler drew something else: finalize with the text so far and discard
+        // the sampled-but-unwanted token.
+        if argmax_eog {
             break;
         }
         if token == model.token_eos() {
@@ -326,6 +333,25 @@ fn do_complete(
         if !piece.is_empty() {
             result.push_str(&piece);
             tokens_emitted += 1;
+            // Word-stutter stop ("and and", "the the"): the model started looping.
+            // Same guard as the instruct path — drop the duplicate and stop.
+            if let Some(trimmed) = strip_trailing_word_stutter(&result) {
+                result = trimmed;
+                break;
+            }
+            // Phrase-loop stop ("I'm gonna die I'm gonna die"): the model is
+            // cycling a multi-word phrase the stutter guard can't see. Keep one
+            // occurrence and stop.
+            if let Some(trimmed) = strip_trailing_phrase_loop(&result) {
+                result = trimmed;
+                break;
+            }
+            // Scaffolding stop: the normaliser truncates at the first stop marker
+            // anyway, so everything past it is guaranteed-discarded work. No
+            // min-token guard — a marker means the model believes the turn is over.
+            if contains_scaffolding_marker(&result) {
+                break;
+            }
             if multi_line {
                 if result.contains("\n\n") { break; }
             } else if result.contains('\n') {
@@ -342,6 +368,7 @@ fn do_complete(
 
         token = sampler.sample(ctx, 0);
         sampler.accept(token);
+        argmax_eog = argmax_is_eog(model, ctx, 0);
     }
 
     // Trim autoregressive tokens out of the KV cache.  The next call's fast-path
@@ -557,10 +584,13 @@ fn do_complete_instruct(
     let mut token = sampler.sample(ctx, last_idx as i32);
     let mut cur_lp = token_logprob(ctx, last_idx as i32, token);
     sampler.accept(token);
+    let mut argmax_eog = argmax_is_eog(model, ctx, last_idx as i32);
 
     for _ in 0..max_tokens {
         // Cooperative cancellation — see do_complete. The KV trim below still runs.
         if cancel.load(Ordering::Relaxed) { break; }
+        // Most-likely token is end-of-generation — see do_complete.
+        if argmax_eog { break; }
         if token == model.token_eos() { break; }
         if fim_pad_id.map_or(false, |id| token == id) { break; }
         if endoftext_id.map_or(false, |id| token == id) { break; }
@@ -581,6 +611,16 @@ fn do_complete_instruct(
                 result = trimmed;
                 break;
             }
+            // Phrase-loop stop — see do_complete.
+            if let Some(trimmed) = strip_trailing_phrase_loop(&result) {
+                result = trimmed;
+                break;
+            }
+            // Scaffolding stop — see do_complete. Catches markers that tokenize
+            // into multiple pieces, which the single-token stop_tokens check misses.
+            if contains_scaffolding_marker(&result) {
+                break;
+            }
             if multi_line {
                 if result.contains("\n\n") { break; }
             } else if result.contains('\n') {
@@ -598,6 +638,7 @@ fn do_complete_instruct(
         token = sampler.sample(ctx, 0);
         cur_lp = token_logprob(ctx, 0, token);
         sampler.accept(token);
+        argmax_eog = argmax_is_eog(model, ctx, 0);
     }
 
     // Trim generated tokens out of the KV cache so the next call's common-prefix
@@ -757,6 +798,59 @@ fn strip_trailing_word_stutter(text: &str) -> Option<String> {
     None
 }
 
+/// If `text` ends with the same multi-word phrase twice in a row ("I'm gonna die
+/// I'm gonna die"), return it cut back to a single occurrence; otherwise `None`.
+/// The phrase-level sibling of [`strip_trailing_word_stutter`]: a looping model
+/// cycles whole phrases at least as often as single words, and nothing else in the
+/// chain can see it — the repeat penalty (1.05) provably fails to stop it, and the
+/// echo/duplication filters compare against the USER's text, not the completion's
+/// own tail. (Neither cotabby nor cotypist guards this shape.)
+///
+/// Words compare case-insensitively but otherwise verbatim, so punctuation drift
+/// protects legitimate repeats: "New York, New York" survives because "York," and
+/// "York" differ. Running per decoded token means a loop is cut the moment its
+/// second occurrence completes, so longer runs never reach the user.
+fn strip_trailing_phrase_loop(text: &str) -> Option<String> {
+    const MIN_PHRASE_WORDS: usize = 2; // single words are the stutter guard's job
+    const MAX_PHRASE_WORDS: usize = 8;
+
+    // Byte spans of each whitespace-separated word, so the cut lands exactly at
+    // the second occurrence's first byte.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = start.take() {
+                spans.push((s, i));
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, text.len()));
+    }
+
+    let n = spans.len();
+    let word = |i: usize| &text[spans[i].0..spans[i].1];
+    for k in MIN_PHRASE_WORDS..=MAX_PHRASE_WORDS {
+        if n < 2 * k {
+            break;
+        }
+        let repeats = (0..k).all(|j| word(n - k + j).eq_ignore_ascii_case(word(n - 2 * k + j)));
+        if !repeats {
+            continue;
+        }
+        // A repeating run with no letters ("2 3 2 3") is a list or score line,
+        // not a language loop — leave numeric patterns alone.
+        if !(n - k..n).any(|i| word(i).chars().any(|c| c.is_alphabetic())) {
+            continue;
+        }
+        return Some(text[..spans[n - k].0].trim_end().to_string());
+    }
+    None
+}
+
 /// Default average per-token log-probability below which an instruct completion is
 /// suppressed as low-confidence — cotabby's `LlamaGenerationOptions.confidenceFloor`.
 /// Defaults to disabled (`-inf`), matching cotabby: calibration on gemma-4-E2B (see
@@ -785,6 +879,59 @@ fn token_logprob(
     }
     let logsumexp = max + sumexp.ln();
     logits[id] - logsumexp
+}
+
+/// True when the raw distribution's most-likely token at output position `idx` is an
+/// end-of-generation token: the model wants to stop here even though the stochastic
+/// sampler drew something else (cotabby LlamaGenerationOptions.stopAtArgmaxEOG, ON by
+/// default there too). This is the anti-rambling stop the sentence classifier cannot
+/// express — lists, fragments, code — and it fires BEFORE the sampled-but-unwanted
+/// token is appended, so the completion finalises with the text accumulated so far.
+fn argmax_is_eog(
+    model: &llama_cpp_2::model::LlamaModel,
+    ctx: &llama_cpp_2::context::LlamaContext,
+    idx: i32,
+) -> bool {
+    let logits = ctx.get_logits_ith(idx);
+    let mut best = 0usize;
+    let mut best_v = f32::NEG_INFINITY;
+    for (i, &v) in logits.iter().enumerate() {
+        if v > best_v {
+            best_v = v;
+            best = i;
+        }
+    }
+    model.is_eog_token(LlamaToken(best as i32))
+}
+
+/// True when the completion introduces a run of four or more identical
+/// punctuation/symbol characters ("....", "$$$$") — decode noise, never prose
+/// (cotabby CompletionSeamGuard's junk-run rule). A run flush against the caret that
+/// continues an identical run the user already has is an existing divider being
+/// extended, not fresh junk — but the preceding run must be a real one (2+): a
+/// sentence that merely ends in "." must not exempt "....".
+pub fn introduces_junk_punctuation_run(completion: &str, prefix: &str) -> bool {
+    const JUNK_RUN_LEN: usize = 4;
+    let mut run_char: Option<char> = None;
+    let mut run_len = 0usize;
+    let mut run_starts_at_start = false;
+    for (i, c) in completion.chars().enumerate() {
+        if Some(c) == run_char {
+            run_len += 1;
+        } else {
+            run_char = Some(c);
+            run_len = 1;
+            run_starts_at_start = i == 0;
+        }
+        if run_len < JUNK_RUN_LEN || c.is_alphanumeric() || c.is_whitespace() {
+            continue;
+        }
+        if run_starts_at_start && prefix.chars().rev().take_while(|&p| p == c).count() >= 2 {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 /// Minimum tokens generated before the sentence-boundary early stop may fire, guarding
@@ -1046,6 +1193,31 @@ pub fn truncate_at_blank_line(mut text: String) -> String {
     text.trim_end().to_string()
 }
 
+/// True when the completion contains a clock time ("7:00", "18:45") while the user's
+/// own text contains none. A generated timestamp the user never set up is the model
+/// imitating chat-transcript chrome from the screen context — timestamps between
+/// messages teach it that "sentence, time, sentence" is the local format, and the
+/// output stops being a continuation of the user's words ("…for a long time 7:00 in
+/// the evening I'm not sure…"). Times the user is already writing about pass through.
+pub fn mimics_transcript_format(completion: &str, prefix: &str) -> bool {
+    contains_clock_time(completion) && !contains_clock_time(prefix)
+}
+
+fn contains_clock_time(s: &str) -> bool {
+    let c: Vec<char> = s.chars().collect();
+    for i in 1..c.len() {
+        if c[i] == ':'
+            && c[i - 1].is_ascii_digit()
+            && i + 2 < c.len()
+            && c[i + 1].is_ascii_digit()
+            && c[i + 2].is_ascii_digit()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Lowercased, alphanumerics-only view of `s`, used for duplication checks so case,
 /// spacing, and punctuation drift cannot defeat a match.
 pub fn fold_alnum(s: &str) -> String {
@@ -1112,10 +1284,57 @@ pub fn duplicates_trailing_text(completion: &str, trailing: &str) -> bool {
 
 // ── Completion normaliser ─────────────────────────────────────────────────────
 
+/// Opening / role markers (cotabby ControlTokenMarkers.openingMarkers plus the
+/// gemma-4 `<|turn>` family). The real continuation sits ADJACENT to these, so only
+/// the marker itself is removed and the surrounding text kept. Longer variants must
+/// precede their prefixes ("<|im_start|>assistant" before "<|im_start|>") or the
+/// role word would survive the strip.
+const OPENING_MARKERS: &[&str] = &[
+    "<|im_start|>assistant",
+    "<|im_start|>",
+    "<start_of_turn>model",
+    "<start_of_turn>",
+    "<|turn>model",
+    "<|turn>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|system|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "[INST]",
+    "[/INST]",
+];
+
+/// Stop / end-of-turn markers (cotabby ControlTokenMarkers.stopMarkers plus gemma-4
+/// `<turn|>`). A stop marker means the model believes the turn is over: everything
+/// after it is a hallucinated NEW turn, never a continuation of the user's text, so
+/// the completion is truncated at the first one — removing the marker in place would
+/// splice that next turn onto the real completion. `</s>` is deliberately absent: it
+/// is also the closing tag of HTML's `<s>` element, and truncating on it would cut
+/// HTML authoring.
+const STOP_MARKERS: &[&str] = &[
+    "<|im_end|>",
+    "<|endoftext|>",
+    "<|end|>",
+    "<end_of_turn>",
+    "<|eot_id|>",
+    "<turn|>",
+];
+
+/// Decode-time scaffolding stop (cotabby DecodeStopPolicy.scaffoldingMarker): once a
+/// stop marker is in the accumulated text, every further token is guaranteed-discarded
+/// work — the normaliser truncates there anyway — so the decode loop stops immediately,
+/// exactly in the worst case where the model has drifted into template scaffolding.
+/// The `<` pre-filter keeps ordinary prose from ever reaching the per-marker scan.
+fn contains_scaffolding_marker(text: &str) -> bool {
+    text.contains('<') && STOP_MARKERS.iter().any(|m| text.contains(m))
+}
+
 /// Cleans raw model output before it is surfaced to the user.
 ///
 /// Passes in order:
-/// 1. Strip chat-control tokens and `<think>` blocks (including unclosed).
+/// 1. Strip `<think>` blocks (including unclosed) and opening/role chat markers;
+///    truncate at the first stop/end-of-turn marker (text past it is a new turn).
 /// 2. Collapse `\r`.
 /// 3. Echo suppression — strip the longest word-suffix of `prefix` that
 ///    matches the start of the completion.  If that suffix spans the entire
@@ -1125,17 +1344,15 @@ pub fn duplicates_trailing_text(completion: &str, trailing: &str) -> bool {
 /// 4. Leading-whitespace normalisation — if `prefix` ends with whitespace,
 ///    strip any leading whitespace from the result to prevent double-spacing.
 pub fn normalize_completion(raw: String, prefix: &str) -> String {
-    let text = strip_think_blocks(&raw);
-    let mut text = text
-        .replace("<|im_start|>assistant", "")
-        .replace("<|im_start|>", "")
-        .replace("<|im_end|>", "")
-        .replace("<start_of_turn>model", "")
-        .replace("<start_of_turn>", "")
-        .replace("<end_of_turn>", "")
-        .replace("<|turn>model", "")
-        .replace("<|turn>", "")
-        .replace("<turn|>", "");
+    let mut text = strip_think_blocks(&raw);
+    for marker in OPENING_MARKERS {
+        if text.contains(marker) {
+            text = text.replace(marker, "");
+        }
+    }
+    if let Some(cut) = STOP_MARKERS.iter().filter_map(|m| text.find(m)).min() {
+        text.truncate(cut);
+    }
 
     text = text.replace('\r', "");
     text = suppress_echo(text, prefix);
@@ -1233,36 +1450,117 @@ fn words_lower(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Common English words excluded from the paraphrase-overlap measure below: replies
+/// legitimately reuse these from the message they answer, so counting them would
+/// suppress ordinary responses.
+const COMMON_WORDS: &[&str] = &[
+    "that", "this", "with", "would", "could", "should", "have", "will", "your",
+    "from", "they", "them", "there", "their", "then", "than", "what", "when",
+    "where", "which", "been", "were", "some", "more", "only", "also", "very",
+    "just", "like", "about", "into", "over", "because", "really", "want", "make",
+    "know", "think", "going", "good", "well", "much", "still", "even", "here",
+];
+
 /// Drop a completion that parrots the captured background context (on-screen OCR or
-/// clipboard) instead of continuing the user's text. Base/continuation models will
-/// sometimes copy a chunk of the injected "Nearby on screen: …" preface verbatim.
-/// Any contiguous run of `MIN_SHARED_WORDS` words shared verbatim (case-insensitive)
-/// between the completion and the context is treated as parroting, and the whole
-/// completion is suppressed. Shorter overlaps (incidental stop-word phrases) are left
-/// alone so genuine continuations that happen to share a few common words survive.
+/// clipboard) instead of continuing the user's text. Two shapes are caught:
+///
+/// 1. Verbatim copy — any contiguous run of `MIN_SHARED_WORDS` words shared
+///    (case-insensitive) between the completion and the context.
+/// 2. Paraphrased regurgitation — nearly all of the completion's distinctive content
+///    words (4+ chars, excluding [`COMMON_WORDS`]) already appear somewhere in the
+///    context. A real continuation of the *user's* thought brings its own vocabulary;
+///    one assembled almost entirely from on-screen words is the context talking, not
+///    the user, and reads as incoherent with the sentence in hand.
 fn suppress_context_copy(completion: String, ctx: &InstrContext) -> String {
     const MIN_SHARED_WORDS: usize = 4;
+    const MIN_CONTENT_WORDS: usize = 3;
+    const MAX_CONTENT_OVERLAP: f64 = 0.75;
 
     let comp_words = words_lower(&completion);
-    if comp_words.len() < MIN_SHARED_WORDS {
-        return completion;
-    }
-
     let context = format!("{} {}", ctx.visual_context, ctx.clipboard_context);
     let ctx_words = words_lower(&context);
     if ctx_words.len() < MIN_SHARED_WORDS {
         return completion;
     }
 
-    let parrots = comp_words
-        .windows(MIN_SHARED_WORDS)
-        .any(|window| ctx_words.windows(MIN_SHARED_WORDS).any(|w| w == window));
+    // A shared run must contain at least one distinctive word: four common words in
+    // a row ("i think that would") recur in any two texts on the same topic and are
+    // not evidence of copying.
+    let distinctive =
+        |w: &String| w.chars().count() >= 4 && !COMMON_WORDS.contains(&w.as_str());
+    let parrots = comp_words.len() >= MIN_SHARED_WORDS
+        && comp_words.windows(MIN_SHARED_WORDS).any(|window| {
+            window.iter().any(distinctive)
+                && ctx_words.windows(MIN_SHARED_WORDS).any(|w| w == window)
+        });
 
-    if parrots {
+    let content: Vec<&str> = comp_words
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.chars().count() >= 4 && !COMMON_WORDS.contains(w))
+        .collect();
+    let paraphrases = content.len() >= MIN_CONTENT_WORDS && {
+        let ctx_set: std::collections::HashSet<&str> =
+            ctx_words.iter().map(String::as_str).collect();
+        let shared = content.iter().filter(|w| ctx_set.contains(**w)).count();
+        shared as f64 / content.len() as f64 >= MAX_CONTENT_OVERLAP
+    };
+
+    if parrots || paraphrases {
         String::new()
     } else {
         completion
     }
+}
+
+/// Final safety predicate before a completion may be shown or inserted (cotabby
+/// InsertionSafetyGate, original implementation): rejects U+FFFD (lossy
+/// detokenization), control characters other than newline (corruption, never
+/// content), and whitespace-only output. Deliberately does NOT judge punctuation —
+/// a lone ")" or "." is a legitimate inline completion.
+pub fn is_safe_to_insert(completion: &str) -> bool {
+    let mut saw_content = false;
+    for c in completion.chars() {
+        if c == '\u{FFFD}' {
+            return false;
+        }
+        if c != '\n' && c.is_control() {
+            return false;
+        }
+        if !c.is_whitespace() {
+            saw_content = true;
+        }
+    }
+    saw_content
+}
+
+/// True when the prefix ends mid-word (a lowercase letter) and the completion
+/// immediately opens a NEW capitalized word with no separator. A coherent
+/// continuation of "…not seeing a simila" finishes the word ("r view…"); starting
+/// "This war is going to…" right against it means the model abandoned the user's
+/// sentence for something out of the background context.
+pub fn breaks_word_continuation(completion: &str, prefix: &str) -> bool {
+    let mid_word = prefix.chars().last().map_or(false, |c| c.is_lowercase());
+    mid_word && completion.chars().next().map_or(false, |c| c.is_uppercase())
+}
+
+/// Whether `context` shares at least one significant token (3+ chars, lowercased)
+/// with `text` (cotabby ClipboardRelevanceFilter's overlap heuristic): clipboard
+/// content that has nothing in common with what the user is writing is noise that
+/// steers the completion off the sentence in hand, so it isn't injected at all.
+pub fn shares_significant_token(context: &str, text: &str) -> bool {
+    fn significant(s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.chars().count() >= 3)
+            .map(str::to_lowercase)
+            .collect()
+    }
+    let ctx_tokens = significant(context);
+    if ctx_tokens.is_empty() {
+        return false;
+    }
+    let text_tokens = significant(text);
+    ctx_tokens.intersection(&text_tokens).next().is_some()
 }
 
 // ── Stub completer for tests ──────────────────────────────────────────────────
@@ -1350,6 +1648,31 @@ mod tests {
     #[test]
     fn trailing_dup_ignores_short_coincidences() {
         assert!(!duplicates_trailing_text("th", "the rest"));
+    }
+
+    // ── transcript-mimicry filter ─────────────────────────────────────────────
+
+    #[test]
+    fn transcript_mimicry_catches_invented_timestamps() {
+        assert!(mimics_transcript_format(
+            "This war is going to be going on for a long time 7:00 in the evening",
+            "I think ",
+        ));
+        assert!(mimics_transcript_format("see you then 18:45", "ok "));
+    }
+
+    #[test]
+    fn transcript_mimicry_allows_times_the_user_is_writing_about() {
+        assert!(!mimics_transcript_format(
+            " and ends at 6:30 pm.",
+            "The meeting starts at 5:30 and",
+        ));
+    }
+
+    #[test]
+    fn transcript_mimicry_allows_plain_text_and_ratios() {
+        assert!(!mimics_transcript_format("I'm not sure that's a good idea.", "Hmm, "));
+        assert!(!mimics_transcript_format("the odds are 3:2 against", "I'd say "));
     }
 
     // ── preceding-duplication filter ──────────────────────────────────────────
@@ -1477,6 +1800,75 @@ mod tests {
         assert_eq!(out, "");
     }
 
+    #[test]
+    fn suppresses_paraphrased_regurgitation() {
+        let ctx = InstrContext {
+            visual_context: "#BREAKING Trump: We will attack Iran hard tonight".into(),
+            ..Default::default()
+        };
+        // Not a verbatim 4-word run, but every distinctive word came off the screen.
+        let out = suppress_context_copy("They will attack Iran hard".into(), &ctx);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn keeps_reply_that_reuses_common_words() {
+        let ctx = InstrContext {
+            visual_context: "I think that would work well for the new design".into(),
+            ..Default::default()
+        };
+        // "think/that/would/well" are common words — replies naturally reuse them.
+        let out = suppress_context_copy("I think that would be fine".into(), &ctx);
+        assert_eq!(out, "I think that would be fine");
+    }
+
+    // ── insertion safety gate ─────────────────────────────────────────────────
+
+    #[test]
+    fn safety_gate_accepts_ordinary_completions() {
+        assert!(is_safe_to_insert("hello world"));
+        assert!(is_safe_to_insert(")"));
+        assert!(is_safe_to_insert("line one\nline two"));
+    }
+
+    #[test]
+    fn safety_gate_rejects_corruption() {
+        assert!(!is_safe_to_insert(""));
+        assert!(!is_safe_to_insert("   "));
+        assert!(!is_safe_to_insert("bad\u{FFFD}bytes"));
+        assert!(!is_safe_to_insert("tab\u{0009}inside"));
+        assert!(!is_safe_to_insert("bell\u{0007}"));
+    }
+
+    // ── word-continuation coherence ───────────────────────────────────────────
+
+    #[test]
+    fn mid_word_prefix_must_be_continued_not_abandoned() {
+        assert!(breaks_word_continuation("This war is going on", "not seeing a simila"));
+        assert!(!breaks_word_continuation("r view of it", "not seeing a simila"));
+        assert!(!breaks_word_continuation(" Sarah and I", "yesterday I met"));
+        assert!(!breaks_word_continuation("Anything is possible", "Done. "));
+    }
+
+    // ── clipboard relevance ───────────────────────────────────────────────────
+
+    #[test]
+    fn clipboard_relevant_when_tokens_overlap() {
+        assert!(shares_significant_token(
+            "the quarterly report draft",
+            "I attached the report you"
+        ));
+    }
+
+    #[test]
+    fn clipboard_irrelevant_when_disjoint_or_empty() {
+        assert!(!shares_significant_token(
+            "rust compiler error E0382 borrow of moved value",
+            "see you at dinner tonight"
+        ));
+        assert!(!shares_significant_token("", "anything at all"));
+    }
+
     // ── common token prefix ───────────────────────────────────────────────────
 
     #[test]
@@ -1501,6 +1893,40 @@ mod tests {
             strip_trailing_word_stutter("Wait The the"),
             Some("Wait The".to_string())
         );
+    }
+
+    #[test]
+    fn phrase_loop_cuts_repeated_phrase_to_one_occurrence() {
+        // The field-observed failure: "I'm gonna die" cycling.
+        let s = "oh my god I'm gonna die I'm gonna die";
+        assert_eq!(
+            strip_trailing_phrase_loop(s).as_deref(),
+            Some("oh my god I'm gonna die")
+        );
+    }
+
+    #[test]
+    fn phrase_loop_is_case_insensitive() {
+        let s = "well well I Told You i told you";
+        assert_eq!(strip_trailing_phrase_loop(s).as_deref(), Some("well well I Told You"));
+    }
+
+    #[test]
+    fn phrase_loop_allows_normal_prose() {
+        assert_eq!(strip_trailing_phrase_loop("it is what it is"), None);
+        assert_eq!(strip_trailing_phrase_loop("the more I see the more I learn"), None);
+        assert_eq!(strip_trailing_phrase_loop("a perfectly ordinary sentence"), None);
+    }
+
+    #[test]
+    fn phrase_loop_respects_punctuation_drift() {
+        // "York," != "York" — deliberate repeats carry punctuation that breaks the match.
+        assert_eq!(strip_trailing_phrase_loop("New York, New York"), None);
+    }
+
+    #[test]
+    fn phrase_loop_leaves_numeric_patterns_alone() {
+        assert_eq!(strip_trailing_phrase_loop("scores were 2 3 2 3"), None);
     }
 
     #[test]
@@ -1554,6 +1980,61 @@ mod tests {
     fn strips_im_start_tokens() {
         let out = normalize_completion("<|im_start|>assistant hello".into(), "say");
         assert_eq!(out, " hello");
+    }
+
+    #[test]
+    fn truncates_hallucinated_turn_after_stop_marker() {
+        // Text past a stop marker is a NEW turn the model invented — it must be
+        // cut, not spliced onto the real completion by removing the marker.
+        let out = normalize_completion(
+            "great idea<|im_end|>\n<|im_start|>user what about".into(),
+            "that is a ",
+        );
+        assert_eq!(out, "great idea");
+        let out = normalize_completion("done here<end_of_turn>more turn text".into(), "ok ");
+        assert_eq!(out, "done here");
+    }
+
+    #[test]
+    fn keeps_html_strikethrough_close_tag() {
+        // </s> is HTML, not a stop marker — truncating on it would cut authoring.
+        let out = normalize_completion("<s>old</s> new text".into(), "edit: ");
+        assert_eq!(out, "<s>old</s> new text");
+    }
+
+    // ── decode-time scaffolding stop ──────────────────────────────────────────
+
+    #[test]
+    fn scaffolding_marker_detected_only_for_stop_markers() {
+        assert!(contains_scaffolding_marker("done<|im_end|>"));
+        assert!(contains_scaffolding_marker("x<end_of_turn>"));
+        assert!(!contains_scaffolding_marker("a < b and c > d"));
+        assert!(!contains_scaffolding_marker("plain prose"));
+    }
+
+    // ── junk punctuation runs (cotabby CompletionSeamGuard) ───────────────────
+
+    #[test]
+    fn junk_run_caught() {
+        assert!(introduces_junk_punctuation_run("wait....", "I said "));
+        assert!(introduces_junk_punctuation_run("$$$$ profit", "we made "));
+    }
+
+    #[test]
+    fn junk_run_allows_normal_punctuation_and_letters() {
+        assert!(!introduces_junk_punctuation_run("done... almost", "nearly "));
+        assert!(!introduces_junk_punctuation_run("aaaand done", "")); // letters, not symbols
+        assert!(!introduces_junk_punctuation_run("    indented", "")); // whitespace
+    }
+
+    #[test]
+    fn junk_run_exempts_extending_an_existing_divider() {
+        // Continuing the user's own "----" divider is legitimate…
+        assert!(!introduces_junk_punctuation_run("----", "section\n----"));
+        // …but a sentence merely ending in "." must not exempt "....",
+        assert!(introduces_junk_punctuation_run("....", "the end."));
+        // and a divider NOT flush against the seam is still junk.
+        assert!(introduces_junk_punctuation_run("and ----", "section\n----"));
     }
 
     #[test]
