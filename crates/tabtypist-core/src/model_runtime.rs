@@ -578,13 +578,25 @@ fn do_complete_instruct(
     // runs past a natural stopping point and keeps the sentence going by inventing/chaining,
     // its per-token confidence falls; a completion whose average drops below the floor is
     // suppressed wholesale rather than shown as a run-on. Tunable via TABTYPIST_CONFIDENCE_FLOOR.
+    //
+    // The floor is read up front because the per-token log-softmax it feeds costs a full
+    // exp() pass over the vocabulary; with the floor at its default (-inf, disabled) and
+    // the CONFIDENCE log off, nothing consumes the value, so the pass is skipped entirely
+    // (cotabby's "gated logprobs"). The argmax-EOG check shares the remaining single scan.
+    let floor = std::env::var("TABTYPIST_CONFIDENCE_FLOOR")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(DEFAULT_CONFIDENCE_FLOOR);
+    let log_confidence = std::env::var("TABTYPIST_LOG_PROMPT").is_ok();
+    let compute_lp = floor > f64::NEG_INFINITY || log_confidence;
     let mut sum_lp = 0f64;
     let mut n_lp = 0usize;
 
     let mut token = sampler.sample(ctx, last_idx as i32);
-    let mut cur_lp = token_logprob(ctx, last_idx as i32, token);
     sampler.accept(token);
-    let mut argmax_eog = argmax_is_eog(model, ctx, last_idx as i32);
+    let (argmax, lp) = scan_logits(ctx, last_idx as i32, compute_lp.then_some(token));
+    let mut argmax_eog = model.is_eog_token(argmax);
+    let mut cur_lp = lp;
 
     for _ in 0..max_tokens {
         // Cooperative cancellation — see do_complete. The KV trim below still runs.
@@ -636,9 +648,10 @@ fn do_complete_instruct(
         pos += 1;
 
         token = sampler.sample(ctx, 0);
-        cur_lp = token_logprob(ctx, 0, token);
         sampler.accept(token);
-        argmax_eog = argmax_is_eog(model, ctx, 0);
+        let (argmax, lp) = scan_logits(ctx, 0, compute_lp.then_some(token));
+        argmax_eog = model.is_eog_token(argmax);
+        cur_lp = lp;
     }
 
     // Trim generated tokens out of the KV cache so the next call's common-prefix
@@ -646,18 +659,14 @@ fn do_complete_instruct(
     let _ = ctx.clear_kv_cache_seq(Some(0), Some(kv_tokens.len() as u32), None);
 
     // Confidence floor: suppress a low-confidence (rambling/invented) completion entirely.
-    let floor = std::env::var("TABTYPIST_CONFIDENCE_FLOOR")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(DEFAULT_CONFIDENCE_FLOOR);
     let avg_lp = if n_lp > 0 { sum_lp / n_lp as f64 } else { 0.0 };
-    if std::env::var("TABTYPIST_LOG_PROMPT").is_ok() {
+    if log_confidence {
         tracing::info!(
             "CONFIDENCE: avg_logprob={:.3} over {} tokens (floor={:.3}) raw={:?}",
             avg_lp, n_lp, floor, result
         );
     }
-    if n_lp > 0 && avg_lp < floor {
+    if compute_lp && n_lp > 0 && avg_lp < floor {
         return Ok(String::new());
     }
 
@@ -860,25 +869,41 @@ fn strip_trailing_phrase_loop(text: &str) -> Option<String> {
 /// TABTYPIST_CONFIDENCE_FLOOR (e.g. -0.5) for experimentation, but off by default.
 const DEFAULT_CONFIDENCE_FLOOR: f64 = f64::NEG_INFINITY;
 
-/// Log-probability the model assigned to `token` at output position `idx`, computed as a
-/// numerically-stable log-softmax over the raw logits (`logit[t] - logsumexp(logits)`).
-fn token_logprob(
+/// One fused scan of the logits at output position `idx`, so the decode loop pays for
+/// exactly what it consumes (cotabby's "gated logprobs" perf fix does the same):
+/// - always returned: the argmax token (for the argmax-EOG stop) — one comparison
+///   pass, no `exp()` work;
+/// - when `logprob_token` is set: the log-probability the model assigned to that
+///   token, via a numerically-stable log-softmax (`logit[t] - logsumexp`). This adds
+///   a full `exp()` pass over the vocabulary (~150K calls), which is why it must stay
+///   off unless the confidence floor or its debug log actually reads the value.
+fn scan_logits(
     ctx: &llama_cpp_2::context::LlamaContext,
     idx: i32,
-    token: LlamaToken,
-) -> f32 {
+    logprob_token: Option<LlamaToken>,
+) -> (LlamaToken, f32) {
     let logits = ctx.get_logits_ith(idx);
+    let mut best = 0usize;
+    let mut max = f32::NEG_INFINITY;
+    for (i, &v) in logits.iter().enumerate() {
+        if v > max {
+            max = v;
+            best = i;
+        }
+    }
+    let argmax = LlamaToken(best as i32);
+    let Some(token) = logprob_token else {
+        return (argmax, 0.0);
+    };
     let id = token.0 as usize;
     if id >= logits.len() {
-        return 0.0;
+        return (argmax, 0.0);
     }
-    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut sumexp = 0f32;
     for &l in logits {
         sumexp += (l - max).exp();
     }
-    let logsumexp = max + sumexp.ln();
-    logits[id] - logsumexp
+    (argmax, logits[id] - (max + sumexp.ln()))
 }
 
 /// True when the raw distribution's most-likely token at output position `idx` is an
@@ -892,16 +917,7 @@ fn argmax_is_eog(
     ctx: &llama_cpp_2::context::LlamaContext,
     idx: i32,
 ) -> bool {
-    let logits = ctx.get_logits_ith(idx);
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    model.is_eog_token(LlamaToken(best as i32))
+    model.is_eog_token(scan_logits(ctx, idx, None).0)
 }
 
 /// True when the completion introduces a run of four or more identical
