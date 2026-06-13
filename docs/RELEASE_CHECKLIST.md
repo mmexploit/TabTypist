@@ -36,7 +36,8 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 
   To set it:
   ```
-  .build/artifacts/sparkle/Sparkle/bin/generate_keys --export | base64 | pbcopy
+  .build/artifacts/sparkle/Sparkle/bin/generate_keys -x /tmp/sparkle_pk.txt
+  cat /tmp/sparkle_pk.txt | pbcopy && rm /tmp/sparkle_pk.txt
   gh secret set SPARKLE_PRIVATE_KEY   # paste from clipboard
   ```
 

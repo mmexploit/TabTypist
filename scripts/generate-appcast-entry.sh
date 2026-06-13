@@ -9,9 +9,9 @@
 #                         (export from keychain: see docs below)
 #
 # To export the private key from your local keychain for the first time:
-#   .build/artifacts/sparkle/Sparkle/bin/generate_keys --export \
-#     | base64 > /tmp/sparkle_private_key_base64.txt
-#   Then add the contents as the SPARKLE_PRIVATE_KEY GitHub secret.
+#   .build/artifacts/sparkle/Sparkle/bin/generate_keys -x /tmp/sparkle_pk.txt
+#   cat /tmp/sparkle_pk.txt | pbcopy && rm /tmp/sparkle_pk.txt
+#   gh secret set SPARKLE_PRIVATE_KEY   # paste from clipboard
 #
 # Output: dist/appcast-entry.xml — upload/merge into https://tabtypist.com/appcast.xml
 set -euo pipefail
