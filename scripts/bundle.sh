@@ -52,6 +52,14 @@ if [ -d "${APP_DIR}/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
         "$XPCSVC/" 2>/dev/null || true
 fi
 
+# Set SKIP_CODESIGN=1 to skip signing (CI will re-sign with Developer ID later).
+if [ -n "${SKIP_CODESIGN:-}" ]; then
+    echo "==> Skipping codesign (SKIP_CODESIGN set)."
+    echo "==> Done: ${APP_DIR}"
+    ls -lh "${APP_DIR}/Contents/MacOS/" "${APP_DIR}/Contents/Resources/"
+    exit 0
+fi
+
 # Codesign. Prefer a STABLE self-signed identity ("TabTypist Dev", created by
 # scripts/make-signing-cert.sh): with a real identity, macOS keys Input
 # Monitoring / Accessibility grants on the designated requirement (identifier +

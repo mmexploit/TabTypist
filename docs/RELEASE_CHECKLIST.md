@@ -29,10 +29,19 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 - [ ] **#9 Verify model download flow for fresh user** — 6 GGUFs from HuggingFace `mradermacher/*` are on public ungated repos (no token required; verified via 302→public CDN). Verify onboarding download works on a clean install. Self-hosting GGUFs is still preferred for reliability.
 
 ## Phase 4 — Signing & notarization
-- [ ] **#10 Confirm CI signing/notarization + dry-run** — secrets set (`DEVELOPER_ID_APPLICATION_CERT_P12_BASE64`, `..._PASSWORD`, `NOTARIZE_APPLE_ID`, `NOTARIZE_TEAM_ID`, `NOTARIZE_APP_PASSWORD`); hardened-runtime entitlements survive notarization (JIT / unsigned-mem / disable-library-validation); dry-run notarize+staple once.
+- [~] **#10 Confirm CI signing/notarization + dry-run** — Pipeline implemented in `.github/workflows/release.yml`: inside-out codesign (XPC → Sparkle.framework → Rust core → Swift binary → bundle), hardened runtime + entitlements, `notarytool submit --wait`, `stapler staple`. Sparkle `startingUpdater` flipped to `true`. Appcast template at `docs/appcast.xml`. **Remaining (manual):** set 7 GitHub secrets; export Sparkle private key for `SPARKLE_PRIVATE_KEY`; dry-run by pushing a `v0.1.0-rc1` tag; host `appcast.xml` at `https://tabtypist.com/appcast.xml`.
+
+  Secrets checklist:
+  - [ ] `DEVELOPER_ID_APPLICATION_CERT_P12_BASE64` — `base64 < cert.p12`
+  - [ ] `DEVELOPER_ID_APPLICATION_CERT_PASSWORD`
+  - [ ] `DEVELOPER_ID_APPLICATION_IDENTITY` — e.g. `"Developer ID Application: Name (TEAMID)"`
+  - [ ] `NOTARIZE_APPLE_ID`
+  - [ ] `NOTARIZE_TEAM_ID`
+  - [ ] `NOTARIZE_APP_PASSWORD` — app-specific password from appleid.apple.com
+  - [ ] `SPARKLE_PRIVATE_KEY` — export: `.build/artifacts/sparkle/Sparkle/bin/generate_keys --export | base64`
 
 ## Phase 5 — Clean-machine QA
 - [ ] **#11 Clean-machine QA smoke test** — install DMG on a clean Mac/user; grant Accessibility + Input Monitoring; finish onboarding; download a model; test focus → ghost text → Tab accept → Esc dismiss; verify new guards (phrase-loop, junk-run, scaffolding stop, OCR cache) in the wild.
 
 ## Phase 6 — Cut the release
-- [ ] **#12 Cut the v0.1.0 beta release** — tag `v0.1.0` + push → CI build/sign/notarize/GitHub pre-release with DMG; verify it opens without Gatekeeper warning on a clean machine.
+- [ ] **#12 Cut the v0.1.0 beta release** — `git tag v0.1.0 && git push origin v0.1.0` → triggers `release.yml` → CI builds, signs, notarizes, creates GitHub pre-release with DMG + appcast entry. After CI passes: merge `dist/appcast-entry.xml` into `docs/appcast.xml` and deploy to `https://tabtypist.com/appcast.xml`.

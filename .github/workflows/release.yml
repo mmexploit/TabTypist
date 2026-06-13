@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Secrets required (set in repo Settings → Secrets → Actions):
+#   DEVELOPER_ID_APPLICATION_CERT_P12_BASE64   — base64 of .p12 export
+#   DEVELOPER_ID_APPLICATION_CERT_PASSWORD     — .p12 export password
+#   DEVELOPER_ID_APPLICATION_IDENTITY          — "Developer ID Application: Name (TEAMID)"
+#   NOTARIZE_APPLE_ID                          — Apple ID email
+#   NOTARIZE_TEAM_ID                           — App Store Connect team ID
+#   NOTARIZE_APP_PASSWORD                      — app-specific password for notarization
+#   SPARKLE_PRIVATE_KEY                        — base64 EdDSA private key (from generate_keys)
+
+jobs:
+  build-sign-release:
+    name: Build · Sign · Notarize · Release
+    runs-on: macos-14
+    permissions:
+      contents: write  # needed to create GitHub release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      # bundle.sh builds Swift + Rust in release mode; SKIP_CODESIGN lets CI sign properly below.
+      - name: Assemble app bundle (release)
+        env:
+          SKIP_CODESIGN: "1"
+        run: bash scripts/bundle.sh --release
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: tabtypist-ci-keychain
+        run: |
+          echo "$CERTIFICATE_P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm /tmp/cert.p12
+
+      - name: Codesign with Developer ID (hardened runtime)
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID_APPLICATION_IDENTITY }}
+        run: |
+          APP="dist/TabTypist.app"
+          ENT="Resources/TabTypist.entitlements"
+
+          # Sign inside-out so each layer is sealed before its parent.
+
+          # 1. Sparkle internal XPC services
+          find "$APP/Contents/Frameworks/Sparkle.framework" -name "*.xpc" | while read xpc; do
+            codesign --force --sign "$DEVELOPER_ID" --options runtime "$xpc"
+          done
+          if [ -d "$APP/Contents/XPCServices" ]; then
+            find "$APP/Contents/XPCServices" -name "*.xpc" | while read xpc; do
+              codesign --force --sign "$DEVELOPER_ID" --options runtime "$xpc"
+            done
+          fi
+
+          # 2. Sparkle.framework (re-sign with our Developer ID for notarization)
+          codesign --force --sign "$DEVELOPER_ID" --options runtime \
+            "$APP/Contents/Frameworks/Sparkle.framework"
+
+          # 3. Rust core binary
+          codesign --force --sign "$DEVELOPER_ID" --options runtime \
+            "$APP/Contents/Resources/tabtypist-core"
+
+          # 4. Main Swift binary with entitlements + hardened runtime
+          codesign --force --sign "$DEVELOPER_ID" --options runtime \
+            --entitlements "$ENT" \
+            "$APP/Contents/MacOS/TabTypist"
+
+          # 5. Bundle top-level seal
+          codesign --force --sign "$DEVELOPER_ID" --options runtime \
+            --entitlements "$ENT" \
+            "$APP"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Create DMG
+        run: bash scripts/make-dmg.sh
+
+      - name: Notarize DMG
+        env:
+          NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
+          NOTARIZE_TEAM_ID: ${{ secrets.NOTARIZE_TEAM_ID }}
+          NOTARIZE_APP_PASSWORD: ${{ secrets.NOTARIZE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit dist/TabTypist.dmg \
+            --apple-id  "$NOTARIZE_APPLE_ID" \
+            --team-id   "$NOTARIZE_TEAM_ID" \
+            --password  "$NOTARIZE_APP_PASSWORD" \
+            --wait \
+            --timeout 20m
+
+      - name: Staple notarization ticket
+        run: xcrun stapler staple dist/TabTypist.dmg
+
+      - name: Generate Sparkle appcast entry
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: bash scripts/generate-appcast-entry.sh "${{ github.ref_name }}"
+
+      - name: Create GitHub pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            dist/TabTypist.dmg
+            dist/appcast-entry.xml

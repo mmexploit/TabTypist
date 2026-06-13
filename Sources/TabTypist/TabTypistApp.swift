@@ -30,13 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // startingUpdater: false — the XPC helper only launches when the user
-        // explicitly requests an update check. With a self-signed dev cert the
-        // XPC trust chain fails immediately and produces an "Unable to Check For
-        // Updates" dialog on every launch. Flip to true once signed with a real
-        // Developer ID cert (Phase 4).
+        // startingUpdater: true — Sparkle XPC helper launches at startup.
+        // On dev builds (self-signed cert) this shows a brief "Unable to Check
+        // For Updates" dialog; click OK and continue. Release builds signed with
+        // Developer ID work cleanly once appcast.xml is live at tabtypist.com.
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
+            startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
