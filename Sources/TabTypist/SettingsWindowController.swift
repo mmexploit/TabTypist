@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import IOKit.hid
+import UniformTypeIdentifiers
 
 final class SettingsWindowController: NSObject {
     static let shared = SettingsWindowController()
@@ -93,7 +94,6 @@ struct SettingsView: View {
                 LabeledContent("HuggingFace token") {
                     SecureField("hf_... (optional)", text: $hfToken)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
                         .onSubmit { sendHfToken() }
                 }
                 Text("Not needed for built-in models — they're on public repos. Only required for custom GGUFs from gated or private HuggingFace repos.")
@@ -110,6 +110,10 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
+                        Button("Choose file…") {
+                            loadLocalModel()
+                        }
+                        .disabled(downloadingCustom)
                         Button(downloadingCustom ? "Downloading…" : "Download") {
                             downloadCustomModel()
                         }
@@ -356,6 +360,22 @@ struct SettingsView: View {
         IPCBridge.shared.notify(method: "startModelDownload", params: [
             "language": "en",
             "customUrl": url,
+        ])
+    }
+
+    private func loadLocalModel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a GGUF model file to load"
+        panel.prompt = "Load Model"
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        downloadingCustom = true
+        IPCBridge.shared.notify(method: "startModelDownload", params: [
+            "language": "en",
+            "localPath": fileURL.path,
         ])
     }
 }

@@ -14,7 +14,7 @@ Capture the visible content above the focused text field and inject it as contex
 
 **Filtering strategies (both shipped, B is default):**
 - **(B) Proximity trim:** Take the last N characters of the joined OCR strings (physically closest to the input field). N = remaining budget after other context fields are filled. This naturally discards toolbars and menu bars at the top.
-- **(C) Model distillation:** Run a summarisation pass through the loaded model to strip UI chrome and keep prose. Gate behind a `CotabbyVisualDistillation` feature flag in `UserDefaults`. Measure end-to-end latency with and without; if C adds > 100 ms on the quality tier, keep B as permanent default.
+- **(C) Model distillation:** Run a summarisation pass through the loaded model to strip UI chrome and keep prose. Gate behind a `VisualDistillation` feature flag in `UserDefaults`. Measure end-to-end latency with and without; if C adds > 100 ms on the quality tier, keep B as permanent default.
 
 **Budget:** OCR context is the highest-priority context signal (ADR 0006). It consumes its portion of the 1 000-char shared budget before other fields.
 

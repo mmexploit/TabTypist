@@ -717,6 +717,7 @@ async fn handle_message(
             let lang       = params["language"].as_str().unwrap_or("en").to_string();
             let model_id   = params["modelId"].as_str().map(|s| s.to_string());
             let custom_url = params["customUrl"].as_str().map(|s| s.to_string());
+            let local_path = params["localPath"].as_str().map(|s| s.to_string());
             let hf_token   = settings.get().hf_token;
             let transport_c  = transport.clone();
             let router_c     = router.clone();
@@ -724,6 +725,42 @@ async fn handle_message(
             let settings_c   = settings.clone();
 
             tokio::spawn(async move {
+                // Local file: skip download entirely, load directly from path.
+                if let Some(path_str) = local_path {
+                    let path = std::path::PathBuf::from(&path_str);
+                    let stem = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("local-model")
+                        .to_string();
+                    let id = format!("local-{}", stem.replace(['.', ' '], "-"));
+                    let _ = transport_c.lock().await
+                        .send_notification("downloadProgress", serde_json::json!({
+                            "phase": "downloading", "downloaded": 0_i64, "total": 0_i64, "progress": 0.5
+                        })).await;
+                    let _ = settings_c.update(|s| { s.model_overrides.insert(lang.clone(), id.clone()); });
+                    match model_runtime::LlamaCppCompleter::load(&path) {
+                        Ok(c) => {
+                            router_c.lock().await.register(lang.clone(), Arc::new(c));
+                            let _ = transport_c.lock().await
+                                .send_notification("downloadProgress", serde_json::json!({
+                                    "phase": "complete", "progress": 1.0
+                                })).await;
+                            let _ = transport_c.lock().await
+                                .send_notification("modelLoaded", serde_json::json!({
+                                    "tier": "custom",
+                                    "displayName": stem,
+                                })).await;
+                        }
+                        Err(e) => {
+                            let _ = transport_c.lock().await
+                                .send_notification("downloadProgress", serde_json::json!({
+                                    "phase": "failed", "error": e.to_string()
+                                })).await;
+                        }
+                    }
+                    return;
+                }
+
                 // Priority: explicit customUrl > modelId > language default.
                 let entry = if let Some(url) = custom_url {
                     let filename = url.split('/').last().unwrap_or("custom-model").to_string();
