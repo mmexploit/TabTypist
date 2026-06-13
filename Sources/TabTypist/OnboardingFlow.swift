@@ -180,7 +180,6 @@ final class ModelPickerController {
 
 enum OnboardingPhase: Int, CaseIterable {
     case welcome = 1
-    case languageSelect
     case accessibilityPermission
     case screenRecordingPermission
     case modelDownload
@@ -199,7 +198,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             // Progress dots
             HStack(spacing: 6) {
-                ForEach(1...5, id: \.self) { i in
+                ForEach(1...4, id: \.self) { i in
                     Circle()
                         .fill(i <= phase.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
                         .frame(width: 6, height: 6)
@@ -243,8 +242,6 @@ struct OnboardingView: View {
         switch phase {
         case .welcome:
             WelcomeStep()
-        case .languageSelect:
-            LanguageSelectStep(state: state)
         case .accessibilityPermission:
             AccessibilityStep(granted: $accessibilityGranted)
         case .screenRecordingPermission:
@@ -262,11 +259,6 @@ struct OnboardingView: View {
             case .welcome:
                 Button("Get Started") { withAnimation { advance() } }
                     .buttonStyle(.borderedProminent)
-
-            case .languageSelect:
-                Button("Continue") { withAnimation { advance() } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(state.selectedLanguages.isEmpty)
 
             case .accessibilityPermission:
                 if accessibilityGranted {
@@ -396,85 +388,6 @@ struct FeaturePill: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(color.opacity(0.1), in: Capsule())
-    }
-}
-
-struct LanguageSelectStep: View {
-    @ObservedObject var state: OnboardingState
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Text("Choose Your Languages")
-                .font(.title2.bold())
-            Text("TabTypist downloads a model for each language. You can change this later.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 400)
-
-            VStack(spacing: 12) {
-                LanguageRow(
-                    name: "English",
-                    modelInfo: "Standard tier · ~1.3 GB",
-                    flag: "🇬🇧",
-                    isSelected: state.selectedLanguages.contains("en")
-                ) {
-                    toggleLanguage("en")
-                }
-                .disabled(true) // English is always required at v1
-            }
-            .frame(maxWidth: 400)
-
-            Text("More languages coming soon")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 40)
-        .padding(.vertical, 32)
-    }
-
-    private func toggleLanguage(_ code: String) {
-        if state.selectedLanguages.contains(code) {
-            state.selectedLanguages.remove(code)
-        } else {
-            state.selectedLanguages.insert(code)
-        }
-        let langs = Array(state.selectedLanguages)
-        IPCBridge.shared.notify(method: "updateSetting", params: ["key": "languages", "value": langs])
-    }
-}
-
-struct LanguageRow: View {
-    let name: String
-    let modelInfo: String
-    let flag: String
-    let isSelected: Bool
-    let onToggle: () -> Void
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 14) {
-                Text(flag).font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.body.weight(.medium))
-                    Text(modelInfo).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isSelected ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(isSelected ? Color.accentColor.opacity(0.4) : .clear, lineWidth: 1.5)
-                    )
-            )
-        }
-        .buttonStyle(.plain)
     }
 }
 
