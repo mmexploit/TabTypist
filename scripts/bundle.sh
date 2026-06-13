@@ -30,12 +30,27 @@ echo "==> Assembling ${APP_DIR}..."
 rm -rf "$APP_DIR"
 mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources"
+mkdir -p "${APP_DIR}/Contents/Frameworks"
 
 cp "${SWIFT_BUILD_DIR}/TabTypist" "${APP_DIR}/Contents/MacOS/TabTypist"
 cp "${RUST_BUILD_DIR}/tabtypist-core" "${APP_DIR}/Contents/Resources/tabtypist-core"
 cp "Resources/ed25519_pubkey.bin" "${APP_DIR}/Contents/Resources/ed25519_pubkey.bin"
 cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
+
+# Embed Sparkle.framework (SPM places it alongside the binary in the build dir).
+# Frameworks live in Contents/Frameworks; add an rpath so the binary finds them.
+cp -R "${SWIFT_BUILD_DIR}/Sparkle.framework" "${APP_DIR}/Contents/Frameworks/Sparkle.framework"
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "${APP_DIR}/Contents/MacOS/TabTypist" 2>/dev/null || true
+
+# Sparkle bundles an Updater.app XPC helper; it must be inside the main bundle.
+if [ -d "${APP_DIR}/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app" ]; then
+    XPCSVC="${APP_DIR}/Contents/XPCServices"
+    mkdir -p "$XPCSVC"
+    cp -R "${APP_DIR}/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/." \
+        "$XPCSVC/" 2>/dev/null || true
+fi
 
 # Codesign. Prefer a STABLE self-signed identity ("TabTypist Dev", created by
 # scripts/make-signing-cert.sh): with a real identity, macOS keys Input
@@ -51,12 +66,23 @@ SIGN_IDENTITY="${CODESIGN_IDENTITY:-TabTypist Dev}"
 # `-v` would hide it, but it still signs fine and TCC matches on it correctly.
 if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
     echo "==> Codesigning with stable identity: $SIGN_IDENTITY"
-    codesign --force --deep --sign "$SIGN_IDENTITY" \
-        --identifier com.tabtypist.TabTypist "${APP_DIR}"
+    # Sign our own binary first, then the bundle top-level.
+    # Sparkle.framework ships pre-signed by the Sparkle team — re-signing it with
+    # --deep triggers a keychain prompt for every sub-component (Updater.app, XPC
+    # services). Signing only our binary + the bundle top level triggers one prompt,
+    # and Sparkle's existing Apple signature satisfies Gatekeeper.
+    codesign --force --sign "$SIGN_IDENTITY" \
+        --identifier com.tabtypist.TabTypist \
+        "${APP_DIR}/Contents/MacOS/TabTypist"
+    codesign --force --sign "$SIGN_IDENTITY" \
+        --identifier com.tabtypist.TabTypist \
+        "${APP_DIR}"
 else
     echo "==> ⚠️  No '$SIGN_IDENTITY' identity found — falling back to AD-HOC signing."
     echo "    Input Monitoring will be revoked on every rebuild. To fix permanently:"
     echo "        bash scripts/make-signing-cert.sh"
+    codesign --force --sign - --identifier com.tabtypist.TabTypist \
+        "${APP_DIR}/Contents/MacOS/TabTypist"
     codesign --force --sign - --identifier com.tabtypist.TabTypist "${APP_DIR}"
 fi
 
