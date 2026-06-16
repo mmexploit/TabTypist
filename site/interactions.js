@@ -47,27 +47,26 @@
     });
   }
 
-  /* ---- download + GitHub stats, served from the public repo ----
-     The button already points at the latest release asset (a plain GitHub
-     redirect — no API, no rate limit, works with JS off). The fetches below
-     only *enhance* it: pick up the newest release (incl. pre-releases), show
-     the live version + size, and fill real star counts. Everything fails
-     silently and leaves the static values untouched. */
+  /* ---- download label, served from the public repo ----
+     Every download button points at the version-less redirect
+     https://github.com/<owner>/<repo>/releases/latest/download/<asset>, which
+     GitHub resolves to the current Latest release on each click — no API, no
+     rate limit, works with JS off, and never needs a version baked into the
+     href. The fetch below ONLY enhances the label (live version + size); it
+     deliberately does NOT rewrite the href, so the button can never get pinned
+     to a stale tag. Fails silently and leaves the static label untouched. */
   const GH_OWNER = 'mmexploit', GH_REPO = 'TabTypist', DMG_NAME = 'TabTypist.dmg';
   const GH_API = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO;
   const fmtStars = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
 
-  fetch(GH_API + '/releases?per_page=1')
+  fetch(GH_API + '/releases/latest')
     .then((r) => r.ok ? r.json() : Promise.reject())
-    .then((list) => {
-      const rel = Array.isArray(list) && list[0];
-      if (!rel) return;
+    .then((rel) => {
+      if (!rel || !rel.tag_name) return;
       const assets = rel.assets || [];
       const asset = assets.find((a) => a.name === DMG_NAME) || assets.find((a) => /\.dmg$/i.test(a.name));
-      const dmg = document.getElementById('dmgBtn');
-      if (dmg && asset) dmg.href = asset.browser_download_url;
-      const sub = dmg && dmg.querySelector('.sub');
-      const ver = (rel.tag_name || '').replace(/^v/, '');
+      const sub = document.querySelector('#dmgBtn .sub');
+      const ver = rel.tag_name.replace(/^v/, '');
       const mb = asset ? Math.round(asset.size / 1048576) : null;
       if (sub && ver) sub.textContent = 'v' + ver + ' · .dmg · macOS 13+ · Apple Silicon & Intel' + (mb ? ' · ' + mb + ' MB' : '');
     })
