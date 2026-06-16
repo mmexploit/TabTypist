@@ -9,8 +9,20 @@ final class KeyCapture: @unchecked Sendable {
     static let shared = KeyCapture()
 
     private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var healthTimer: Timer?
-    private var retryTimer: Timer?
+
+    // The consuming session tap is installed ONLY while a completion is visible
+    // (see `setInterceptionActive`). A `.defaultTap` is synchronous: the WindowServer
+    // holds delivery of every keystroke until our callback returns, and that callback
+    // is serviced on the main run loop — the same run loop AXMonitor uses to walk a
+    // (possibly slow) app's Accessibility tree on every poll. Keeping the tap installed
+    // full-time therefore put EVERY keystroke behind that AX walk, which is what made
+    // typing stutter in Electron/Chromium apps. Installing the tap only when there is
+    // something to Tab-accept keeps ordinary typing off the synchronous path entirely.
+    private var interceptionActive = false
+    private var teardownWork: DispatchWorkItem?
+
     private(set) var completionIsVisible: Bool = false
     private(set) var pendingCompletionText: String = ""
 
@@ -37,12 +49,14 @@ final class KeyCapture: @unchecked Sendable {
         pendingCompletionText = text
         completionIsVisible = !text.isEmpty
         isWordByWordInProgress = false
+        setInterceptionActive(completionIsVisible)
     }
 
     func clearCompletion() {
         pendingCompletionText = ""
         completionIsVisible = false
         isWordByWordInProgress = false
+        setInterceptionActive(false)
     }
 
     func clearWordByWordFlag() {
@@ -118,22 +132,62 @@ final class KeyCapture: @unchecked Sendable {
             _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
         }
 
-        if !createTap() {
-            // Both grants are user-toggled in System Settings and can be flipped
-            // while we run. Poll every 2 s and create the tap the moment both are
-            // present, so "enable the toggle, then it works" needs no relaunch.
-            retryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
-                guard let self else { timer.invalidate(); return }
-                if self.createTap() {
-                    timer.invalidate()
-                    self.retryTimer = nil
-                }
-            }
+        // The tap is NOT created here. It is installed lazily the first time a completion
+        // becomes visible (`setInterceptionActive`) and torn down when it hides, so the
+        // synchronous keystroke-gating path only exists while there is something to accept.
+        // Permission grants are re-checked at install time, so flipping the System Settings
+        // toggle while we run takes effect on the next completion without a relaunch.
+    }
+
+    /// Installs the consuming tap when a completion is visible and tears it down otherwise.
+    /// Safe to call from any thread; the tap's run-loop source lives on the main run loop.
+    private func setInterceptionActive(_ active: Bool) {
+        if Thread.isMainThread {
+            applyInterception(active)
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.applyInterception(active) }
         }
     }
 
-    /// Attempts to create + enable the event tap. Returns true on success.
+    private func applyInterception(_ active: Bool) {
+        interceptionActive = active
+        if active {
+            teardownWork?.cancel()
+            teardownWork = nil
+            _ = createTap()
+        } else {
+            // Defer the mach-port teardown briefly so a final-accept's synthetic insertion
+            // (posted to .cghidEventTap from the accept path) can drain through the session
+            // tap chain before we pull our tap out of it — otherwise the last accepted word
+            // can be lost. Re-check `interceptionActive` at fire time so a completion that
+            // re-appeared during the delay keeps the tap installed.
+            teardownWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.interceptionActive else { return }
+                self.destroyTap()
+            }
+            teardownWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+        }
+    }
+
+    private func destroyTap() {
+        healthTimer?.invalidate()
+        healthTimer = nil
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        runLoopSource = nil
+        if let tap = eventTap {
+            CFMachPortInvalidate(tap)
+        }
+        eventTap = nil
+    }
+
+    /// Attempts to create + enable the event tap. Returns true on success (or if already up).
+    @discardableResult
     private func createTap() -> Bool {
+        guard eventTap == nil else { return true }
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
@@ -159,8 +213,9 @@ final class KeyCapture: @unchecked Sendable {
             return false
         }
 
-        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
         // Secure input mode (EnableSecureEventInput, e.g. a focused password

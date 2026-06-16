@@ -66,7 +66,13 @@ final class IPCBridge: @unchecked Sendable {
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private let writeLock = NSLock()
+    // All outbound writes run here, off the caller's thread. `send` is called from the
+    // main thread on every keystroke (AXMonitor's contextUpdate); a synchronous pipe
+    // write there blocks the main run loop whenever the core's stdin buffer is full —
+    // the same run loop that services the keystroke event tap, so it shows up as typing
+    // lag. A serial queue keeps writes ordered (handshake responses included) and also
+    // serialises `encoder` access, which `send` previously touched from several threads.
+    private let writeQueue = DispatchQueue(label: "com.tabtypist.ipc.write")
 
     /// Called on every inbound message (dispatched on a background thread).
     var onMessage: ((RpcMessage) -> Void)?
@@ -120,18 +126,19 @@ final class IPCBridge: @unchecked Sendable {
     }
 
     func send(_ msg: RpcMessage) {
-        guard let data = try? encoder.encode(msg),
-              var line = String(data: data, encoding: .utf8)
-        else { return }
-        line += "\n"
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        if let wh = writeHandle {
-            wh.write(line.data(using: .utf8)!)
-        } else {
-            // Standalone mode: write to our stdout (parent reads it)
-            print(line, terminator: "")
-            fflush(stdout)
+        writeQueue.async { [weak self] in
+            guard let self,
+                  let data = try? self.encoder.encode(msg),
+                  var line = String(data: data, encoding: .utf8)
+            else { return }
+            line += "\n"
+            if let wh = self.writeHandle {
+                wh.write(line.data(using: .utf8)!)
+            } else {
+                // Standalone mode: write to our stdout (parent reads it)
+                print(line, terminator: "")
+                fflush(stdout)
+            }
         }
     }
 

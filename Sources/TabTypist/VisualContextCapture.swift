@@ -157,8 +157,14 @@ final class VisualContextCapture: @unchecked Sendable {
     private func recogniseLines(
         in image: CGImage, fieldSpan: ClosedRange<CGFloat>
     ) async -> [OCRHygiene.Line] {
-        let prepared = downsampled(image)
         return await withCheckedContinuation { continuation in
+          // Vision's accurate recogniser and the downsample bitmap allocate sizeable
+          // transient buffers (CGContext backing store, per-request working memory) that
+          // land in the autorelease pool. This pipeline runs in a detached Task with no
+          // run loop to drain that pool promptly, so without an explicit pool the peak
+          // RSS of each capture stacks until the Task ends. Draining here flattens it.
+          autoreleasepool {
+            let prepared = self.downsampled(image)
             let request = VNRecognizeTextRequest { request, _ in
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
                 // Column filter: keep only text whose box overlaps the field's own
@@ -204,6 +210,7 @@ final class VisualContextCapture: @unchecked Sendable {
             } catch {
                 continuation.resume(returning: [])
             }
+          }
         }
     }
 

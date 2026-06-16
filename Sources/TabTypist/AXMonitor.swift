@@ -39,9 +39,18 @@ final class AXMonitor: @unchecked Sendable {
     private static let ocrSettleInterval: TimeInterval = 0.25  // 250 ms settle after focus change
     private static let ocrRefreshInterval: TimeInterval = 15
 
-    // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
+    // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 500 ms.
+    // The per-app AXObserver delivers value/selection/focus changes immediately
+    // (registerAXObserver), so the timer is only an idle backstop — a longer idle stride
+    // costs no responsiveness on real edits but stops the main thread waking ~12x/sec to
+    // re-walk a static (often slow, Electron) Accessibility tree while the user is idle.
     private var currentPollInterval: TimeInterval = 0.08
     private var unchangedPollCount: Int = 0
+
+    // Last geometry actually pushed to FieldEdgeIndicator, so an unchanged poll doesn't
+    // schedule a redundant main-thread update (see the gated dispatch in poll()).
+    private var lastIndicatorFrame: CGRect?
+    private var lastIndicatorCaretY: CGFloat?
 
     // Debounce for Apple Intelligence completions (mirrors the 20 ms Rust debounce).
     private var aiDebounceWork: DispatchWorkItem?
@@ -389,16 +398,24 @@ final class AXMonitor: @unchecked Sendable {
             ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH) : nil
         let caretLineMidY: CGFloat? = caretRect.height > 0
             ? primaryScreenHeight - caretRect.origin.y - caretRect.height / 2 : nil
-        DispatchQueue.main.async {
-            if let f = fieldFrame { FieldEdgeIndicator.shared.show(inputFrame: f, caretLineMidY: caretLineMidY) }
-            else { FieldEdgeIndicator.shared.hide() }
+        // Only update the indicator when its geometry actually changed. poll() runs up to
+        // ~12x/sec; an unconditional dispatch scheduled a main-thread work item every tick
+        // even on idle polls where nothing moved. Scrolling/window drags still update
+        // because they change the frame; a static field schedules nothing.
+        if fieldFrame != lastIndicatorFrame || caretLineMidY != lastIndicatorCaretY {
+            lastIndicatorFrame = fieldFrame
+            lastIndicatorCaretY = caretLineMidY
+            DispatchQueue.main.async {
+                if let f = fieldFrame { FieldEdgeIndicator.shared.show(inputFrame: f, caretLineMidY: caretLineMidY) }
+                else { FieldEdgeIndicator.shared.hide() }
+            }
         }
 
         // Adaptive backoff: widen the poll interval while idle; snap back on change.
         if prefix == lastPrefix && bundleId == lastBundleId {
             unchangedPollCount += 1
-            if unchangedPollCount >= 5 && currentPollInterval < 0.20 {
-                currentPollInterval = min(currentPollInterval * 2, 0.20)
+            if unchangedPollCount >= 5 && currentPollInterval < 0.50 {
+                currentPollInterval = min(currentPollInterval * 2, 0.50)
                 unchangedPollCount = 0
                 reschedulePollTimer()
             }
