@@ -1,0 +1,14 @@
+# Cloudflare Pages / Netlify-style cache rules.
+# Long-cache the fingerprint-free assets conservatively; HTML stays fresh.
+
+/assets/*
+  Cache-Control: public, max-age=604800
+
+/*.css
+  Cache-Control: public, max-age=86400
+
+/*.js
+  Cache-Control: public, max-age=86400
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

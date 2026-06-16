@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TabTypist — AI that finishes your sentence, right where you type</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=Noto+Sans+Ethiopic:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-theme="pure">
+
+<!-- ============ NAV ============ -->
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <img class="nav-logo" src="assets/logo.png" alt="TabTypist" />
+      <span class="b-solid">Tab</span><span class="b-ghost" id="brandGhost">Typist</span><span class="b-caret"></span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#use-cases">Where it helps</a>
+      <a href="#privacy">Security</a>
+      <a href="#languages">Languages</a>
+      <a class="nav-gh" href="https://github.com/mmexploit/TabTypist" target="_blank" rel="noopener" aria-label="TabTypist on GitHub">
+        <span class="gh-l"><svg class="gh-mark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</span>
+        <span class="gh-c"><span class="st">★</span>Star</span>
+      </a>
+      <a class="nav-dl btn btn-acc btn-sm" href="#download">Download</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="top" data-screen-label="Hero">
+  <div class="wrap">
+    <img class="hero-logo" src="assets/logo.png" alt="TabTypist" />
+    <span class="eyebrow hero-eyebrow"><span class="dot"></span>Private AI writing · macOS · made for teams</span>
+    <h1>AI that finishes your sentence. <span class="ghosty">Right where you work.</span></h1>
+    <p class="lede">TabTypist offers an inline completion as your team types — in the apps they already use. Press <span class="kbd acc">Tab&nbsp;⇥</span> to accept, keep typing to ignore. No new tool to open, no workflow to learn.</p>
+    <div class="hero-ctas">
+      <a class="btn btn-acc" href="#download">Download for macOS</a>
+      <a class="btn btn-ghost-d" href="#why">Why teams choose it →</a>
+      <a class="hero-gh" href="https://github.com/mmexploit/TabTypist" target="_blank" rel="noopener">
+        <span class="gh-l"><svg class="gh-mark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</span>
+        <span class="gh-c"><span class="st">★</span>Star</span>
+      </a>
+    </div>
+    <p class="hero-note">
+      <span><span class="tick">✓</span> Data never leaves the device</span>
+      <span><span class="tick">✓</span> Works in your existing apps</span>
+      <span><span class="tick">✓</span> Nothing to roll out or manage</span>
+    </p>
+
+    <!-- interactive demo -->
+    <div class="demo-shell reveal" id="demoShell">
+      <div class="win">
+        <div class="win-bar">
+          <span class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+          <div class="win-tabs" id="winTabs">
+            <button class="win-tab active" data-app="mail"><span class="glyph"></span>Mail</button>
+            <button class="win-tab" data-app="slack"><span class="glyph"></span>Slack</button>
+            <button class="win-tab" data-app="notes"><span class="glyph"></span>Notes</button>
+          </div>
+        </div>
+        <div class="field-meta"><span class="to" id="fieldTo">New message · To: alex@team.co</span></div>
+        <div class="field" id="field" tabindex="0" role="textbox" aria-label="Try typing here"></div>
+        <div class="win-foot">
+          <span class="mode"><span class="live"></span>Local mode · on-device</span>
+          <div class="lang-toggle" id="langToggle">
+            <button class="active" data-lang="en">EN</button>
+            <button class="eth" data-lang="am">አማ</button>
+          </div>
+        </div>
+      </div>
+      <p class="demo-hint" id="demoHint"><b>Click the field and start typing.</b> A completion appears — press <span style="color:var(--acc)">Tab</span> to accept, <span style="color:var(--on-dark)">Esc</span> to dismiss.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ WHY / WORKFLOW TAX ============ -->
+<section class="band workflow" id="why" data-screen-label="Why">
+  <div class="wrap">
+    <div class="sec-head center reveal">
+      <span class="eyebrow">Why it exists</span>
+      <h2>Your words shouldn't take a round trip<br />through someone else's chatbot.</h2>
+      <p>The usual way to write with AI is a detour: copy the context out, paste it into a chatbot, wait, copy the answer back. Every loop breaks your focus — and ships whatever you pasted to a third party. TabTypist closes the loop by reading what's already on your screen and completing it in place.</p>
+    </div>
+    <div class="compare">
+      <div class="cmp detour reveal">
+        <div class="cmp-head"><span class="cmp-k">The detour</span><span class="cmp-tax">~6 steps · every reply</span></div>
+        <ol class="loop">
+          <li><span class="ln">1</span><span>Select your draft and the context around it</span></li>
+          <li><span class="ln">2</span><span>Switch to a chatbot tab<span class="warn">↗ you've left the app you were working in</span></span></li>
+          <li><span class="ln">3</span><span>Paste it in<span class="warn">⚠ confidential text now lives on someone else's server</span></span></li>
+          <li><span class="ln">4</span><span>Wait, read, re-prompt until it's right</span></li>
+          <li><span class="ln">5</span><span>Copy the reply back out</span></li>
+          <li><span class="ln">6</span><span>Switch back, paste, fix the formatting</span></li>
+        </ol>
+        <div class="cmp-foot bad">Flow broken · context leaked · minutes gone</div>
+      </div>
+      <div class="cmp inline reveal d1">
+        <div class="cmp-head"><span class="cmp-k acc">With TabTypist</span><span class="cmp-tax acc">1 key · in place</span></div>
+        <div class="inline-demo">
+          <div class="mini-meta">Reply · To: alex@team.co</div>
+          <div class="mini-field">Thanks for flagging that — <span class="mg">I'll send the revised numbers over by end of day.</span><span class="mini-pill">⇥ Tab</span></div>
+          <p class="reads"><b>TabTypist reads what's already on your screen</b> — the thread, the doc, the ticket — entirely on-device, and completes the sentence you were already writing.</p>
+        </div>
+        <div class="cmp-foot good">In your flow · nothing leaves the Mac · instant</div>
+      </div>
+    </div>
+    <div class="why-foot reveal d2">
+      <div class="wf"><b>Email &amp; replies</b>Finish the message you're already in — no tab, no paste.</div>
+      <div class="wf"><b>Notes &amp; docs</b>Capture the thought without leaving the document.</div>
+      <div class="wf"><b>Support at volume</b>Move through routine replies without the copy-paste tax.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section class="band features" id="features" data-screen-label="Features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">The whole interaction</span>
+      <h2>One key to accept. Zero to ignore.</h2>
+      <p>TabTypist is built to disappear into the way your team already writes. Everything below happens inline, in whatever app they're already in.</p>
+    </div>
+    <div class="feat-grid">
+      <div class="feat reveal">
+        <div class="ic">⇥</div>
+        <h3>Press Tab. Done.</h3>
+        <p>Ghost text shows how your sentence might continue. Tab commits it; Escape dismisses it; typing something else just leaves it behind. When no completion is showing, Tab works exactly like it always did.</p>
+        <div class="demo-line">Let me know if you <span class="g">have any questions</span> <span class="acc">⇥ Tab</span></div>
+      </div>
+      <div class="feat reveal d1">
+        <div class="ic">⌂</div>
+        <h3>Sensitive text never leaves the device.</h3>
+        <p>Completions are generated right on each person's Mac — no servers, no accounts, nothing sent anywhere. The kind of tool your security team can actually say yes to.</p>
+        <div class="demo-line"><span class="acc">●</span> On device &nbsp; <span class="g">— 0 bytes sent · 0 accounts</span></div>
+      </div>
+      <div class="feat reveal d2">
+        <div class="ic">▤</div>
+        <h3>Fits the tools you already have.</h3>
+        <p>Mail, Slack, your CRM, a browser text box, internal docs — TabTypist follows the cursor across the apps your team works in all day. Nothing to integrate.</p>
+        <div class="demo-line">Mail · Slack · CRM · Docs <span class="g">· …and the rest</span></div>
+      </div>
+      <div class="feat reveal d3">
+        <div class="ic">あ</div>
+        <h3>Built for global teams.</h3>
+        <p>English ships now, and assistance is tuned per language so teammates get the same fluent help whatever they write in. Amharic is landing next — with more to follow.</p>
+        <div class="demo-line eth-line"><span style="font-family:var(--f-eth)">ሰላም፣ <span class="g">እንዴት ነህ?</span></span> <span class="acc">soon</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHERE IT HELPS ============ -->
+<section class="band how" id="use-cases" data-screen-label="Where it helps">
+  <div class="wrap">
+    <div class="sec-head center reveal">
+      <span class="eyebrow">Where it helps</span>
+      <h2>The writing your team does all day,<br />a little faster every time.</h2>
+      <p>TabTypist meets people in the apps they already live in — there's no new workflow to adopt.</p>
+    </div>
+    <div class="use-grid">
+      <div class="use-card reveal">
+        <div class="tag">Customer-facing</div>
+        <h4>Email &amp; chat</h4>
+        <p>Reply to prospects and clients in fewer keystrokes, with a tone that stays clear and professional.</p>
+      </div>
+      <div class="use-card reveal d1">
+        <div class="tag">Support &amp; success</div>
+        <h4>Faster replies</h4>
+        <p>Move through routine responses quickly so the team has more time for the conversations that really need them.</p>
+      </div>
+      <div class="use-card reveal d2">
+        <div class="tag">Internal</div>
+        <h4>Docs, notes &amp; updates</h4>
+        <p>Meeting notes, status updates and specs come together without breaking anyone's train of thought.</p>
+      </div>
+      <div class="use-card reveal d3">
+        <div class="tag">Across languages</div>
+        <h4>Multilingual comms</h4>
+        <p>Teammates writing in Amharic and English get the same fluent assistance, side by side.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PRIVACY ============ -->
+<section class="band privacy" id="privacy" data-screen-label="Privacy">
+  <div class="wrap">
+    <div class="layout">
+      <div>
+        <div class="sec-head reveal" style="margin-bottom:34px">
+          <span class="eyebrow">Security &amp; compliance</span>
+          <h2>It knows where not to look.</h2>
+          <p>TabTypist stays out of the places it shouldn't be — automatically, before anyone has to configure a thing.</p>
+        </div>
+        <div class="tiers">
+          <div class="tier off reveal">
+            <span class="badge">Always off</span>
+            <div>
+              <h4>Secret fields</h4>
+              <p>Password prompts, keychains and anything the system marks as secure are off-limits — and no setting can turn that on.</p>
+            </div>
+          </div>
+          <div class="tier maybe reveal d1">
+            <span class="badge">Off by default</span>
+            <div>
+              <h4>Password managers &amp; banking</h4>
+              <p>1Password, Bitwarden, Apple Passwords and major banking apps start disabled. You can re-enable per app if you really want to.</p>
+            </div>
+          </div>
+          <div class="tier on reveal d2">
+            <span class="badge">On by default</span>
+            <div>
+              <h4>Everything else</h4>
+              <p>Including messaging apps — but the first time TabTypist wakes up in Signal, Telegram, WhatsApp or iMessage, a one-time toast tells you, and offers to switch it off.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="privacy-side reveal d1">
+        <div class="menubar">
+          <span class="mb-ic">􀊫</span>
+          <span class="mb-ic">􀙇</span>
+          <span class="mb-tt"><span class="paused"></span>TabTypist · paused here</span>
+          <span class="clock">Tue 9:41</span>
+        </div>
+        <p class="mb-cap">The menu bar always shows whether it's listening.</p>
+
+        <ul class="trust-list">
+          <li><span class="tk">→</span><span><b>Asks for access transparently.</b> Permissions are requested with plain-language explanations of exactly what each one is for — and when.</span></li>
+          <li><span class="tk">→</span><span><b>No usage data unless you opt in.</b> Even then, it never includes a single character of what was typed or completed.</span></li>
+          <li><span class="tk">→</span><span><b>Clean to remove.</b> Uninstalling takes every model, setting and cached file with it.</span></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============ LANGUAGES ============ -->
+<section class="band langs" id="languages" data-screen-label="Languages">
+  <div class="wrap">
+    <div class="sec-head reveal" style="max-width:54ch">
+      <span class="eyebrow">For global teams</span>
+      <h2>More languages, <span class="ghosty-h">coming fast.</span></h2>
+      <p>Most writing tools quietly assume everyone works in English. TabTypist is built to give every teammate fluent help in the language they actually write in — English ships today, Amharic lands next, and more follow close behind.</p>
+    </div>
+    <div class="lang-layout">
+      <div class="amh-card reveal">
+        <div class="lbl"><span>ኢሜይል · Mail</span><span id="amhTag" class="badge-soon">Coming soon</span></div>
+        <div class="amh-line" id="amhLine"></div>
+        <p class="amh-trans" id="amhTrans">“Hello, how are you?”</p>
+      </div>
+      <div class="lang-points reveal d1">
+        <div class="lang-point">
+          <div class="num">FLUENT, NOT FORCED</div>
+          <h4>Assistance tuned per language</h4>
+          <p>Each language gets help built for it — so suggestions read naturally and arrive in the rhythm of writing, not a beat too late.</p>
+        </div>
+        <div class="lang-point">
+          <div class="num">BILINGUAL</div>
+          <h4>Switch without toggling</h4>
+          <p>When more languages arrive, TabTypist will detect which one you're typing and complete in kind — no manual switch.</p>
+        </div>
+        <div class="lang-point">
+          <div class="num">AVAILABILITY</div>
+          <div class="lang-row">
+            <span class="lang-chip live">English ●</span>
+            <span class="lang-chip soon">አማርኛ Amharic · soon</span>
+            <span class="lang-chip soon">More to follow</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ OPEN SOURCE ============ -->
+<section class="band oss" id="open-source" data-screen-label="Open source">
+  <div class="wrap">
+    <div class="sec-head reveal" style="max-width:56ch">
+      <span class="eyebrow">Open core · Rust inside</span>
+      <h2>A native Rust core.<br />Fast now, everywhere next.</h2>
+      <p>The engine behind every completion is written in Rust — close to the metal, no runtime overhead. It's what keeps suggestions instant on-device today, and what makes the next platform a port instead of a rewrite.</p>
+    </div>
+    <div class="core-layout">
+      <div class="arch reveal">
+        <div class="arch-row">
+          <div class="arch-box swift"><span class="ab-k">Swift app</span><span class="ab-d">menu bar · overlay · key capture</span></div>
+          <div class="arch-pipe"><span class="ap-ic">⇄</span><span class="ap-l">JSON-RPC</span></div>
+          <div class="arch-box rust"><span class="ab-k">Rust core</span><span class="ab-d">llama.cpp inference · models · settings</span></div>
+        </div>
+        <ul class="arch-pts">
+          <li><span class="tk">→</span><span><b>Tight enough to keep up with you.</b> Native code hands back a completion the instant the model does — no garbage-collection pauses between keystrokes.</span></li>
+          <li><span class="tk">→</span><span><b>Portable by design.</b> The core carries no Apple dependencies, so a Windows or Linux front-end reuses the very same engine.</span></li>
+        </ul>
+      </div>
+      <aside class="roadmap-side reveal d1">
+        <div class="num">PLATFORM ROADMAP</div>
+        <div class="roadmap">
+          <div class="rm-row now"><span class="rm-dot"></span><div><b>macOS</b><span class="rm-s">Available now · macOS 13+</span></div></div>
+          <div class="rm-row next"><span class="rm-dot"></span><div><b>Windows &amp; Linux</b><span class="rm-s">Next — same Rust core</span></div></div>
+        </div>
+        <a class="gh-cta" href="https://github.com/mmexploit/TabTypist" target="_blank" rel="noopener">
+          <span class="gh-cta-l"><svg class="gh-mark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</span>
+          <span class="gh-cta-c"><span class="st">★</span>Star</span>
+        </a>
+        <p class="gh-note">Open core — read the engine, build a front-end, ship a platform.</p>
+      </aside>
+    </div>
+    <div class="oss-points oss-row">
+      <div class="oss-point reveal"><span class="tk">→</span><span><b>Auditable end to end.</b> Every claim on this page is backed by source your team can read and review.</span></div>
+      <div class="oss-point reveal d1"><span class="tk">→</span><span><b>Signed and verified.</b> Installs and updates are code-signed and notarized, so each version is as trustworthy as the first.</span></div>
+      <div class="oss-point reveal d2"><span class="tk">→</span><span><b>No lock-in.</b> The portable core means your team is never tied to one vendor — or one operating system.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DOWNLOAD ============ -->
+<section class="band download" id="download" data-screen-label="Download">
+  <div class="wrap">
+    <div class="dl-inner reveal">
+      <h2>Bring it to your team.</h2>
+      <p>A lightweight menu-bar app. Install it, grant access, and start typing — there's nothing to configure or administer.</p>
+      <div class="dl-ctas">
+        <a class="btn btn-acc dl-big" href="https://github.com/mmexploit/TabTypist/releases/latest/download/TabTypist.dmg" id="dmgBtn">Download for macOS<span class="sub">.dmg · macOS 13+ · Apple Silicon &amp; Intel</span></a>
+      </div>
+      <div class="brew">
+        <code><span class="prompt">$</span> brew install --cask tabtypist</code>
+        <button class="copy" id="brewCopy">Copy</button>
+      </div>
+      <p class="dl-fine">Open source · signed &amp; notarized · easy to roll out</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="foot">
+  <div class="wrap">
+    <span class="f-brand"><img class="foot-logo" src="assets/logo.png" alt="" />TabTypist</span>
+    <div class="f-links">
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#languages">Languages</a>
+      <a href="https://github.com/mmexploit/TabTypist" target="_blank" rel="noopener">GitHub ↗</a>
+      <a href="#download">Download</a>
+    </div>
+    <p class="f-note">Open core · Rust engine · macOS now, Windows &amp; Linux next · English now, more languages coming · This is a product showcase.</p>
+  </div>
+</footer>
+
+<script src="demo.js"></script>
+<script src="interactions.js"></script>
+</body>
+</html>

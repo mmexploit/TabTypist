@@ -1,0 +1,87 @@
+/* ============================================================
+   TabTypist — page interactions
+   nav scroll state · scroll reveals · brand ghost · copy brew
+   ============================================================ */
+(function () {
+  /* nav shadow on scroll */
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 24);
+  onScroll();
+  window.addEventListener('scroll', onScroll, { passive: true });
+
+  /* scroll reveals */
+  const reveals = document.querySelectorAll('.reveal');
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+  reveals.forEach((r) => io.observe(r));
+
+  /* brand "Typist" ghost → accept on load (cute self-demo of the product) */
+  const bg = document.getElementById('brandGhost');
+  if (bg) {
+    setTimeout(() => {
+      bg.style.transition = 'color .5s var(--ease)';
+      bg.style.color = 'var(--ink)';
+    }, 1400);
+  }
+
+  /* copy brew command */
+  const copy = document.getElementById('brewCopy');
+  if (copy) {
+    copy.addEventListener('click', async () => {
+      const cmd = 'brew install --cask tabtypist';
+      try {
+        await navigator.clipboard.writeText(cmd);
+      } catch (_) {
+        const ta = document.createElement('textarea');
+        ta.value = cmd; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+      const prev = copy.textContent;
+      copy.textContent = '✓ Copied';
+      copy.classList.add('done');
+      setTimeout(() => { copy.textContent = prev; copy.classList.remove('done'); }, 1600);
+    });
+  }
+
+  /* ---- download + GitHub stats, served from the public repo ----
+     The button already points at the latest release asset (a plain GitHub
+     redirect — no API, no rate limit, works with JS off). The fetches below
+     only *enhance* it: pick up the newest release (incl. pre-releases), show
+     the live version + size, and fill real star counts. Everything fails
+     silently and leaves the static values untouched. */
+  const GH_OWNER = 'mmexploit', GH_REPO = 'TabTypist', DMG_NAME = 'TabTypist.dmg';
+  const GH_API = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO;
+  const fmtStars = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+
+  fetch(GH_API + '/releases?per_page=1')
+    .then((r) => r.ok ? r.json() : Promise.reject())
+    .then((list) => {
+      const rel = Array.isArray(list) && list[0];
+      if (!rel) return;
+      const assets = rel.assets || [];
+      const asset = assets.find((a) => a.name === DMG_NAME) || assets.find((a) => /\.dmg$/i.test(a.name));
+      const dmg = document.getElementById('dmgBtn');
+      if (dmg && asset) dmg.href = asset.browser_download_url;
+      const sub = dmg && dmg.querySelector('.sub');
+      const ver = (rel.tag_name || '').replace(/^v/, '');
+      const mb = asset ? Math.round(asset.size / 1048576) : null;
+      if (sub && ver) sub.textContent = 'v' + ver + ' · .dmg · macOS 13+ · Apple Silicon & Intel' + (mb ? ' · ' + mb + ' MB' : '');
+    })
+    .catch(() => {});
+
+  /* Star count is hidden for now. Re-enable by uncommenting this block and
+     restoring the [data-gh-stars] badges in index.html.
+  fetch(GH_API)
+    .then((r) => r.ok ? r.json() : Promise.reject())
+    .then((d) => {
+      if (typeof d.stargazers_count !== 'number') return;
+      const s = fmtStars(d.stargazers_count);
+      document.querySelectorAll('[data-gh-stars]').forEach((el) => { el.textContent = s; });
+    })
+    .catch(() => {});
+  */
+})();
