@@ -1,25 +1,61 @@
-# TabTypist
+<div align="center">
 
-Ghost-text inline completions for every app on your Mac — powered by a local AI model. No cloud, no subscriptions.
+<img src="Resources/AppIcon-source.png" alt="TabTypist" width="140" height="140" />
 
-Start typing anywhere. After a brief pause, a grey suggestion appears at the caret. Press **Tab** to accept or **Esc** to dismiss.
+<h1>TabTypist <sup><sub>beta</sub></sup></h1>
 
-## Features
+### On-device AI autocomplete for every app on your Mac.
 
-- Works system-wide: text editors, email clients, chat apps, browsers, anything
-- Runs entirely on-device — no text leaves your Mac
-- Six model tiers (Nano → Pro) to match your hardware
-- Context-aware: reads on-screen text near the field via on-device OCR (optional)
-- Configurable completion length, writing style rules, and per-app exclusions
+<em>No cloud. No subscriptions. Your text never leaves your machine.</em>
 
-## Requirements
+<br/>
 
-- macOS 14 Ventura or later
+<p>
+  <a href="https://github.com/mmexploit/TabTypist/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac-007AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download for Mac" /></a>
+  <a href="#build-from-source"><img src="https://img.shields.io/badge/Build_from_source-2B2B2B?style=for-the-badge&logo=swift&logoColor=white" alt="Build from source" /></a>
+  <a href="https://github.com/mmexploit/TabTypist/issues"><img src="https://img.shields.io/badge/Report_a_bug-FFFFFF?style=for-the-badge&logo=github&logoColor=black" alt="Report a bug" /></a>
+</p>
+
+<p>
+  <a href="https://github.com/mmexploit/TabTypist/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/mmexploit/TabTypist/ci.yml?branch=main&label=build" alt="Build status" /></a>
+  <img src="https://img.shields.io/badge/license-FSL--1.1-blue" alt="License: FSL-1.1" />
+  <a href="https://github.com/mmexploit/TabTypist/releases"><img src="https://img.shields.io/github/v/release/mmexploit/TabTypist?include_prereleases&label=release" alt="Latest release" /></a>
+  <a href="https://github.com/mmexploit/TabTypist/releases"><img src="https://img.shields.io/github/downloads/mmexploit/TabTypist/total?label=downloads" alt="Downloads" /></a>
+  <a href="https://github.com/mmexploit/TabTypist/stargazers"><img src="https://img.shields.io/github/stars/mmexploit/TabTypist?label=stars" alt="Stars" /></a>
+  <img src="https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white" alt="Swift" />
+  <img src="https://img.shields.io/badge/platform-macOS_14%2B-lightgrey" alt="Platform: macOS 14+" />
+</p>
+
+</div>
+
+---
+
+Start typing anywhere. After a brief pause, a grey suggestion appears right at your caret. Press **Tab** to accept a word, **`** (backtick) to accept the whole thing, or **Esc** to dismiss.
+
+## ✨ Features
+
+- **Works system-wide** — text editors, email, chat apps, browsers, anything with a text field
+- **100% on-device** — inference runs locally via `llama.cpp`; no text ever leaves your Mac
+- **Six model tiers** — Nano → Pro, so you can match quality to your hardware
+- **Context-aware** — optionally reads on-screen text near the field via on-device OCR for sharper suggestions
+- **Tab to accept, word by word** — take one word at a time or the full completion in a single key
+- **Yours to shape** — configurable completion length, personal writing-style rules, and per-app exclusions
+- **Light on your machine** — lazy keyboard tap, off-main IPC, and bounded OCR keep typing snappy
+
+## 📦 Install
+
+1. **[Download the latest `.dmg`](https://github.com/mmexploit/TabTypist/releases/latest)** and drag TabTypist to Applications.
+2. First launch: right-click the app → **Open** (the beta is ad-hoc signed, so Gatekeeper asks once).
+3. Grant **Accessibility** and **Input Monitoring** when prompted, then finish onboarding and pick a model tier.
+
+## 🖥 Requirements
+
+- macOS 14 (Sonoma) or later
 - Apple Silicon or Intel Mac with at least 8 GB RAM (4 GB for the Nano tier)
 
-## Permissions
+## 🔐 Permissions
 
-TabTypist needs two permissions to function, and one optional one:
+TabTypist needs two permissions to function, plus one optional one:
 
 | Permission | Why |
 |---|---|
@@ -27,60 +63,9 @@ TabTypist needs two permissions to function, and one optional one:
 | **Input Monitoring** | Detect Tab and Escape keypresses |
 | **Screen Recording** *(optional)* | On-device OCR of nearby text for context-aware suggestions |
 
-After installing, grant these in **System Settings → Privacy & Security**.
+Grant these in **System Settings → Privacy & Security**.
 
-## Build from Source
-
-### Prerequisites
-
-- Xcode 15+ / Swift 5.9+
-- Rust toolchain (stable) — install via [rustup.rs](https://rustup.rs)
-- Cargo's target for your architecture (included with Rust)
-
-### Build
-
-```bash
-# Clone the repository
-git clone https://github.com/tabtypist/TabTypist.git
-cd TabTypist
-
-# Build and assemble the .app bundle (debug)
-bash scripts/bundle.sh
-
-# Or build a release bundle
-bash scripts/bundle.sh --release
-```
-
-The assembled app is at `dist/TabTypist.app`.
-
-### Code signing (for development)
-
-Without a stable signing identity, macOS revokes Input Monitoring on every rebuild. Create a self-signed identity once:
-
-```bash
-bash scripts/make-signing-cert.sh
-```
-
-This creates a "TabTypist Dev" identity in your login keychain. The bundle script finds and uses it automatically on subsequent builds.
-
-## Architecture
-
-TabTypist is two processes communicating over a JSON-RPC pipe:
-
-```
-TabTypist (Swift)          tabtypist-core (Rust)
-  Menu bar UI       ←──→   llama.cpp inference
-  AX monitor                Model downloader
-  Overlay / popup           Settings store
-  Onboarding UI             Exclusion engine
-```
-
-- **Swift app** (`Sources/TabTypist/`): menu bar, onboarding, overlay windows, AX and key capture
-- **Rust core** (`crates/tabtypist-core/`): local inference via `llama-cpp-2`, model downloads, settings persistence
-
-The Rust binary lives in `TabTypist.app/Contents/Resources/tabtypist-core`. The Swift app spawns it on launch and communicates over piped stdin/stdout.
-
-## Model Tiers
+## 🧩 Model Tiers
 
 | Tier | Size | Min RAM |
 |---|---|---|
@@ -91,18 +76,68 @@ The Rust binary lives in `TabTypist.app/Contents/Resources/tabtypist-core`. The 
 | Quality | 3.9 GB | 16 GB+ |
 | Pro | 5.3 GB | 24 GB+ |
 
-Models are GGUF base checkpoints downloaded from HuggingFace during onboarding. A HuggingFace account (free read-only token) is required.
+Models are GGUF base checkpoints downloaded from HuggingFace during onboarding. A free HuggingFace read-only token is required.
 
-## Beta Status
+## Build from Source
 
-This is a **v0.1.0 pre-release**. Expect rough edges:
+### Prerequisites
+
+- Xcode 15+ / Swift 5.9+
+- Rust toolchain (stable) — install via [rustup.rs](https://rustup.rs)
+
+### Build
+
+```bash
+# Clone the repository
+git clone https://github.com/mmexploit/TabTypist.git
+cd TabTypist
+
+# Build and assemble the .app bundle (debug)
+bash scripts/bundle.sh
+
+# Or build a release bundle
+bash scripts/bundle.sh --release
+```
+
+The assembled app lands at `dist/TabTypist.app`.
+
+### Code signing (for development)
+
+Without a stable signing identity, macOS revokes Input Monitoring on every rebuild. Create a self-signed identity once:
+
+```bash
+bash scripts/make-signing-cert.sh
+```
+
+This creates a "TabTypist Dev" identity in your login keychain; the bundle script finds and uses it automatically on later builds.
+
+## 🏗 Architecture
+
+TabTypist is two processes talking over a JSON-RPC pipe:
+
+```
+TabTypist (Swift)          tabtypist-core (Rust)
+  Menu bar UI       ←──→   llama.cpp inference
+  AX monitor                Model downloader
+  Overlay / popup           Settings store
+  Onboarding UI             Exclusion engine
+```
+
+- **Swift app** (`Sources/TabTypist/`) — menu bar, onboarding, overlay windows, Accessibility and key capture
+- **Rust core** (`crates/tabtypist-core/`) — local inference via `llama-cpp-2`, model downloads, settings persistence
+
+The Rust binary lives at `TabTypist.app/Contents/Resources/tabtypist-core`. The Swift app spawns it on launch and communicates over piped stdin/stdout.
+
+## 🚧 Beta Status
+
+This is **v0.1.1**, an early beta. Expect rough edges:
 
 - Model download requires a HuggingFace token (self-hosting planned for v1.0)
 - Telemetry endpoint is not yet live
-- Automatic update delivery (Sparkle) is wired but the appcast is not yet hosted
+- Automatic updates (Sparkle) are wired but the appcast is not yet hosted
 
-Bug reports and feedback welcome via [GitHub Issues](https://github.com/tabtypist/TabTypist/issues).
+Bug reports and feedback are very welcome via [GitHub Issues](https://github.com/mmexploit/TabTypist/issues).
 
-## License
+## 📄 License
 
 [Functional Source License 1.1](LICENSE) — free for non-production use; converts to Apache 2.0 four years after publication.
