@@ -47,30 +47,65 @@
     });
   }
 
-  /* ---- download label, served from the public repo ----
-     Every download button points at the version-less redirect
-     https://github.com/<owner>/<repo>/releases/latest/download/<asset>, which
-     GitHub resolves to the current Latest release on each click — no API, no
-     rate limit, works with JS off, and never needs a version baked into the
-     href. The fetch below ONLY enhances the label (live version + size); it
-     deliberately does NOT rewrite the href, so the button can never get pinned
-     to a stale tag. Fails silently and leaves the static label untouched. */
+  /* ---- download + GitHub stats, served from the public repo ----
+     The button already points at the latest release asset (a plain GitHub
+     redirect — no API, no rate limit, works with JS off). The fetches below
+     only *enhance* it: pick up the newest release (incl. pre-releases), show
+     the live version + size, and fill real star counts. Everything fails
+     silently and leaves the static values untouched. */
   const GH_OWNER = 'mmexploit', GH_REPO = 'TabTypist', DMG_NAME = 'TabTypist.dmg';
   const GH_API = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO;
   const fmtStars = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
 
-  fetch(GH_API + '/releases/latest')
+  fetch(GH_API + '/releases?per_page=1')
     .then((r) => r.ok ? r.json() : Promise.reject())
-    .then((rel) => {
-      if (!rel || !rel.tag_name) return;
+    .then((list) => {
+      const rel = Array.isArray(list) && list[0];
+      if (!rel) return;
       const assets = rel.assets || [];
       const asset = assets.find((a) => a.name === DMG_NAME) || assets.find((a) => /\.dmg$/i.test(a.name));
-      const sub = document.querySelector('#dmgBtn .sub');
-      const ver = rel.tag_name.replace(/^v/, '');
+      const dmg = document.getElementById('dmgBtn');
+      if (dmg && asset) dmg.href = asset.browser_download_url;
+      const sub = dmg && dmg.querySelector('.sub');
+      const ver = (rel.tag_name || '').replace(/^v/, '');
       const mb = asset ? Math.round(asset.size / 1048576) : null;
       if (sub && ver) sub.textContent = 'v' + ver + ' · .dmg · macOS 13+ · Apple Silicon & Intel' + (mb ? ' · ' + mb + ' MB' : '');
     })
     .catch(() => {});
+
+  /* Friction Horizon — draggable open-book split */
+  (function () {
+    const horizon = document.getElementById('horizon');
+    const bar = document.getElementById('horizonBar');
+    if (!horizon || !bar) return;
+    const MIN = 18, MAX = 82;
+    let dragging = false;
+
+    const set = (pct) => {
+      pct = Math.max(MIN, Math.min(MAX, pct));
+      horizon.style.setProperty('--split', pct.toFixed(1));
+      bar.setAttribute('aria-valuenow', Math.round(pct));
+    };
+    const fromEvent = (clientX) => {
+      const r = horizon.getBoundingClientRect();
+      set(((clientX - r.left) / r.width) * 100);
+    };
+
+    bar.addEventListener('pointerdown', (e) => {
+      dragging = true; bar.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    window.addEventListener('pointermove', (e) => { if (dragging) fromEvent(e.clientX); });
+    window.addEventListener('pointerup', () => { dragging = false; });
+    horizon.addEventListener('pointerdown', (e) => {
+      if (e.target === bar || bar.contains(e.target)) return;
+      fromEvent(e.clientX);
+    });
+    bar.addEventListener('keydown', (e) => {
+      const cur = parseFloat(horizon.style.getPropertyValue('--split')) || 52;
+      if (e.key === 'ArrowLeft') { set(cur - 4); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { set(cur + 4); e.preventDefault(); }
+    });
+  })();
 
   /* Star count is hidden for now. Re-enable by uncommenting this block and
      restoring the [data-gh-stars] badges in index.html.

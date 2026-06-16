@@ -135,11 +135,22 @@
   }
 
   /* ---------- actions ---------- */
+  // length of the next chunk to accept: one word plus any trailing space,
+  // so each Tab commits a single word and leaves the caret ready for the next.
+  function nextWordCut(str) {
+    let i = 0;
+    while (i < str.length && str[i] === ' ') i++;   // leading space
+    while (i < str.length && str[i] !== ' ') i++;    // the word
+    while (i < str.length && str[i] === ' ') i++;    // trailing space
+    return i;
+  }
+
   function accept() {
     if (!ghost) return false;
     const from = typed.length;
-    typed += ghost;
-    ghost = '';
+    const cut = nextWordCut(ghost);
+    typed += ghost.slice(0, cut);
+    ghost = ghost.slice(cut);   // remaining words stay as ghost
     dismissed = false;
     render({ acceptedFrom: from, pressPill: true });
     return true;
@@ -177,7 +188,7 @@
     if (!userDriving) {
       userDriving = true;
       autoToken++; // cancel autoplay
-      hint.innerHTML = "You're driving now — keep typing, hit <span style='color:var(--acc)'>Tab</span> to accept, <span style='color:var(--on-dark)'>Esc</span> to dismiss. &nbsp;<span class='replay' id='replayBtn'>↻ watch the demo</span>";
+      hint.innerHTML = "You're driving now — keep typing, hit <span style='color:var(--acc)'>Tab</span> to accept a word at a time, <span style='color:var(--on-dark)'>Esc</span> to dismiss. &nbsp;<span class='replay' id='replayBtn'>↻ watch the demo</span>";
       bindReplay();
     }
   }
@@ -260,10 +271,13 @@
         }
         if (tok !== autoToken) return;
         // let the completion sit
-        if ((await sleep(950, tok)) === 'cancel') return;
-        // press Tab
-        accept();
-        if ((await sleep(1500, tok)) === 'cancel') return;
+        if ((await sleep(820, tok)) === 'cancel') return;
+        // press Tab — accept one word at a time
+        while (ghost && tok === autoToken) {
+          accept();
+          if ((await sleep(430, tok)) === 'cancel') return;
+        }
+        if ((await sleep(1100, tok)) === 'cancel') return;
         // clear before next
         resetField();
         if ((await sleep(420, tok)) === 'cancel') return;
@@ -283,7 +297,7 @@
     if (r) r.addEventListener('click', function () {
       userDriving = false;
       field.blur();
-      hint.innerHTML = "<b>Click the field and start typing.</b> A completion appears — press <span style='color:var(--acc)'>Tab</span> to accept, <span style='color:var(--on-dark)'>Esc</span> to dismiss.";
+      hint.innerHTML = "<b>Click the field and start typing.</b> A completion appears — press <span style='color:var(--acc)'>Tab</span> to accept it one word at a time, <span style='color:var(--on-dark)'>Esc</span> to dismiss.";
       restartAuto();
     });
   }
