@@ -123,11 +123,11 @@
 /* ============================================================
    Download email capture — optional, skippable.
    Intercepts .js-download clicks, asks for an email, POSTs it to
-   /api/lead (Cloudflare Pages Function → D1), then starts the
-   download via the /download gateway. Skipping downloads directly.
+   /api/lead (if a backend is deployed), then downloads. The download
+   target is the button's own href (the GitHub release asset), so the
+   download works whether or not the Cloudflare backend exists.
    ============================================================ */
 (function () {
-  const DOWNLOAD_URL = '/download/TabTypist.dmg'; // gateway → GitHub asset
   const modal = document.getElementById('dlModal');
   if (!modal) return;
 
@@ -135,9 +135,11 @@
   const email = document.getElementById('dlEmail');
   const skip = document.getElementById('dlSkip');
   let lastFocus = null;
+  let downloadHref = null; // set from the clicked button's href
 
   const open = (trigger) => {
     lastFocus = trigger || document.activeElement;
+    downloadHref = (trigger && trigger.href) || downloadHref;
     modal.classList.add('show');
     modal.setAttribute('aria-hidden', 'false');
     setTimeout(() => email.focus(), 60);
@@ -147,7 +149,7 @@
     modal.setAttribute('aria-hidden', 'true');
     if (lastFocus && lastFocus.focus) lastFocus.focus();
   };
-  const download = () => { window.location.href = DOWNLOAD_URL; };
+  const download = () => { if (downloadHref) window.location.href = downloadHref; };
 
   const sendLead = (value) => {
     if (!value) return Promise.resolve();

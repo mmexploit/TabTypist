@@ -1,15 +1,32 @@
-// Cloudflare Pages Function — capture an (optional) email on download.
+// TabTypist site Worker.
 //
-// Route: POST /api/lead   body: { "email": "you@example.com" }
-// Stores the lead in D1. Bind a D1 database as `DB` in the Pages project
-// (Settings → Functions → D1 database bindings) and apply site/d1/schema.sql.
+// Serves the static site in ./site (ASSETS binding) and handles dynamic routes:
+//   POST /api/lead  → store an (optional) email in D1 (binding: DB)
+// Everything else falls through to the static assets.
 //
-// The site only calls this when the user actually entered an email; skipping the
-// prompt sends nothing. Downloads never depend on this endpoint succeeding.
+// The download buttons link straight to the GitHub release asset, so downloads
+// never depend on this Worker. Lead capture is best-effort: if DB isn't bound
+// yet, /api/lead returns 503 and the frontend just proceeds with the download.
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-export async function onRequestPost({ request, env }) {
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/api/lead") {
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "method not allowed" }, 405);
+      }
+      return handleLead(request, env);
+    }
+
+    // Static marketing site.
+    return env.ASSETS.fetch(request);
+  },
+};
+
+async function handleLead(request, env) {
   let email = "";
   try {
     const body = await request.json();
@@ -23,7 +40,7 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (!env.DB) {
-    // Store not configured yet — don't 500 the client; the download still works.
+    // Store not bound yet — don't error the client; the download still works.
     return json({ ok: false, error: "store not configured" }, 503);
   }
 

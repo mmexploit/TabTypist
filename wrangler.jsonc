@@ -1,0 +1,23 @@
+{
+  // Cloudflare Worker for the TabTypist marketing site.
+  // Serves the static site in ./site via the ASSETS binding and handles dynamic
+  // routes (POST /api/lead) in src/index.js. Deploy with: wrangler deploy
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tabtypist",
+  "main": "src/index.js",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    // Dynamic API paths invoke the Worker before the static-asset lookup.
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tabtypist-leads",
+      // Paste the id printed by:  wrangler d1 create tabtypist-leads
+      "database_id": "PASTE_DATABASE_ID_HERE"
+    }
+  ]
+}
