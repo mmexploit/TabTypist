@@ -1,7 +1,4 @@
 {
-  // Cloudflare Worker for the TabTypist marketing site.
-  // Serves the static site in ./site via the ASSETS binding and handles dynamic
-  // routes (POST /api/lead) in src/index.js. Deploy with: wrangler deploy
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tabtypist",
   "main": "src/index.js",
@@ -16,8 +13,7 @@
     {
       "binding": "DB",
       "database_name": "tabtypist-leads",
-      // Paste the id printed by:  wrangler d1 create tabtypist-leads
-      "database_id": "PASTE_DATABASE_ID_HERE"
+      "database_id": "31010dfe-50e1-473a-993e-d46075c91bd4"
     }
   ]
 }
