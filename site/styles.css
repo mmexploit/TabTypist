@@ -728,46 +728,44 @@ footer.foot .f-note { color: var(--ink-2); border-top: 1px solid var(--line-l); 
 .workflow .sec-head { margin-bottom: 44px; }
 .workflow .sec-head h2 { color: var(--on-dark); }
 .workflow .sec-head p { color: var(--on-dark-2); }
-/* ---- Friction Horizon: draggable AXIS split ---- */
+/* ---- Friction Horizon: draggable AXIS split (clip-path based, no cqw) ---- */
 .horizon {
   --split: 52;
-  position: relative; container-type: inline-size;
+  position: relative;
   height: 480px; border-radius: calc(20px * var(--rm)); overflow: hidden;
   border: 1px solid var(--line-d);
-  background: var(--bg);
+  background: #14161e;
   box-shadow: 0 40px 90px -50px rgba(0,0,0,.7);
   user-select: none; cursor: ew-resize; touch-action: none;
 }
-.horizon .layer { position: absolute; top: 0; bottom: 0; overflow: hidden; }
-.horizon .vortex { left: 0; width: calc(var(--split) * 1%); }
-.horizon .flow   { right: 0; width: calc((100 - var(--split)) * 1%); }
+/* both posters fill the whole frame; clip-path reveals each side */
+.horizon .layer { position: absolute; inset: 0; overflow: hidden; }
+.horizon .vortex { clip-path: inset(0 calc((100 - var(--split)) * 1%) 0 0); }
+.horizon .flow   { clip-path: inset(0 0 0 calc(var(--split) * 1%)); }
 
-/* full-width posters, each clipped by its panel as the axis moves */
 .poster {
-  position: absolute; top: 0; height: 100%; width: 100cqw;
-  display: flex; align-items: center; padding: 0 7cqw; box-sizing: border-box;
+  position: absolute; inset: 0;
+  display: flex; align-items: center; padding: 0 7%; box-sizing: border-box;
 }
 .poster::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .06;
-  background-image: linear-gradient(var(--on-dark) 1px, transparent 1px),
-                    linear-gradient(90deg, var(--on-dark) 1px, transparent 1px);
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .05;
+  background-image: linear-gradient(#fff 1px, transparent 1px),
+                    linear-gradient(90deg, #fff 1px, transparent 1px);
   background-size: 48px 48px;
-  -webkit-mask-image: radial-gradient(130% 130% at 50% 0%, #000, transparent 72%);
-          mask-image: radial-gradient(130% 130% at 50% 0%, #000, transparent 72%);
 }
 .poster-l {
-  left: 0; justify-content: flex-start;
+  justify-content: flex-start;
   background:
-    radial-gradient(120% 150% at 0% 0%, oklch(0.30 0.11 30 / .55), transparent 58%),
-    linear-gradient(115deg, oklch(0.185 0.05 30), var(--bg) 72%);
+    radial-gradient(120% 150% at 0% 0%, rgba(150,52,36,.5), transparent 58%),
+    linear-gradient(115deg, #2a1411, #14161e 72%);
 }
 .poster-r {
-  right: 0; justify-content: flex-end;
+  justify-content: flex-end;
   background:
-    radial-gradient(120% 150% at 100% 0%, oklch(0.34 0.11 256 / .5), transparent 58%),
-    linear-gradient(245deg, oklch(0.205 0.07 256), var(--bg) 72%);
+    radial-gradient(120% 150% at 100% 0%, rgba(44,80,150,.5), transparent 58%),
+    linear-gradient(245deg, #14213d, #14161e 72%);
 }
-.hz-in { position: relative; display: flex; flex-direction: column; gap: 22px; max-width: 38cqw; }
+.hz-in { position: relative; display: flex; flex-direction: column; gap: 22px; max-width: 40%; }
 .poster-l .hz-in { align-items: flex-start; text-align: left; }
 .poster-r .hz-in { align-items: flex-end;   text-align: right; }
 
@@ -776,29 +774,29 @@ footer.foot .f-note { color: var(--ink-2); border-top: 1px solid var(--line-l); 
   display: inline-flex; align-items: center; gap: 8px; width: max-content;
   padding: 7px 14px; border-radius: 8px;
 }
-.hz-pill.bad  { color: oklch(0.82 0.13 32); border: 1px solid oklch(0.55 0.17 32 / .6); background: oklch(0.28 0.1 32 / .35); }
-.hz-pill.good { color: var(--on-dark); border: 1px solid var(--line-d); border-radius: 22px; background: rgba(255,255,255,.05); }
-.pdot { width: 7px; height: 7px; border-radius: 50%; background: oklch(0.72 0.2 30); box-shadow: 0 0 9px oklch(0.72 0.2 30); }
+.hz-pill.bad  { color: #f0a690; border: 1px solid rgba(206,92,60,.6); background: rgba(120,48,32,.35); }
+.hz-pill.good { color: #f2f4f8; border: 1px solid var(--line-d); border-radius: 22px; background: rgba(255,255,255,.05); }
+.pdot { width: 7px; height: 7px; border-radius: 50%; background: #ff7a5c; box-shadow: 0 0 9px #ff7a5c; }
 
 .hz-head { font-family: var(--f-display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.04;
-  font-size: clamp(26px, 3.5cqw, 44px); color: var(--on-dark); }
+  font-size: clamp(26px, 2.6vw, 42px); color: #f2f4f8; }
 .hz-head.serif { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; letter-spacing: 0;
-  line-height: 1.0; font-size: clamp(30px, 4.4cqw, 54px); color: oklch(0.93 0.035 45); }
+  line-height: 1.0; font-size: clamp(30px, 3.2vw, 50px); color: #f6ddd2; }
 .strike { color: var(--rust); text-decoration: line-through; text-decoration-thickness: 3px; }
 
-.hz-sub { font-family: var(--f-mono); font-size: 13px; line-height: 1.65; color: var(--on-dark-2); max-width: 32cqw; }
-.poster-l .hz-sub { color: oklch(0.74 0.05 32); }
-.hz-sub b { color: var(--on-dark); font-weight: 600; }
+.hz-sub { font-family: var(--f-mono); font-size: 13px; line-height: 1.65; color: #8b93a3; max-width: 34ch; }
+.poster-l .hz-sub { color: #c89b8f; }
+.hz-sub b { color: #f2f4f8; font-weight: 600; }
 
 .hz-foot { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
-.hz-foot.bad  { color: oklch(0.68 0.13 32); }
-.hz-foot.good { color: var(--acc-2); }
+.hz-foot.bad  { color: #d4876c; }
+.hz-foot.good { color: #5b9bff; }
 
 /* the draggable axis */
 .horizon-bar {
   position: absolute; top: 0; bottom: 0; left: calc(var(--split) * 1%);
   width: 2px; transform: translateX(-1px); z-index: 6; cursor: ew-resize; touch-action: none;
-  background: linear-gradient(180deg, oklch(0.72 0.2 30), var(--acc) 60%);
+  background: linear-gradient(180deg, #ff7a5c, var(--acc) 60%);
   box-shadow: 0 0 24px -2px var(--acc);
 }
 .horizon-bar:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--acc-glow), 0 0 24px -2px var(--acc); }
@@ -806,24 +804,23 @@ footer.foot .f-note { color: var(--ink-2); border-top: 1px solid var(--line-l); 
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   width: 44px; height: 66px; border-radius: 14px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
-  background: rgba(14,16,24,.82); border: 1px solid var(--line-d);
-  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  background: rgba(14,16,24,.9); border: 1px solid var(--line-d);
   box-shadow: 0 12px 34px -10px rgba(0,0,0,.85);
 }
-.hb-axis { font-family: var(--f-mono); font-size: 8px; letter-spacing: .2em; color: var(--on-dark-2); }
-.hb-arrows { font-size: 16px; line-height: 1; color: var(--on-dark); }
+.hb-axis { font-family: var(--f-mono); font-size: 8px; letter-spacing: .2em; color: #8b93a3; }
+.hb-arrows { font-size: 16px; line-height: 1; color: #f2f4f8; }
 .hz-hint {
   position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 6; pointer-events: none;
   font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--on-dark-2); white-space: nowrap;
-  background: rgba(14,16,24,.7); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  color: #8b93a3; white-space: nowrap;
+  background: rgba(14,16,24,.78);
   padding: 8px 16px; border-radius: 30px; border: 1px solid var(--line-d);
 }
-.hz-hint .ax { color: var(--acc-2); }
+.hz-hint .ax { color: #5b9bff; }
 @media (max-width: 760px) {
-  .horizon { height: auto; container-type: normal; cursor: default; }
-  .horizon .layer { position: relative; width: 100% !important; }
-  .poster { position: relative; width: 100%; padding: 38px 28px; }
+  .horizon { height: auto; cursor: default; }
+  .horizon .layer { position: relative; inset: auto; clip-path: none !important; }
+  .poster { position: relative; inset: auto; padding: 36px 26px; }
   .poster::before { display: none; }
   .hz-in { max-width: none; }
   .poster-r .hz-in { align-items: flex-start; text-align: left; }
