@@ -68,6 +68,10 @@ struct SettingsView: View {
     @State private var customModelUrl: String = ""
     @State private var downloadingCustom: Bool = false
 
+    // Updates
+    @State private var autoUpdateEnabled: Bool =
+        UpdaterManager.shared.automaticallyChecksForUpdates
+
     // Privacy
     @State private var telemetryEnabled: Bool =
         UserDefaults.standard.bool(forKey: "telemetryEnabled")
@@ -234,6 +238,10 @@ struct SettingsView: View {
 
             // ── Updates ───────────────────────────────────────────────────────
             Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $autoUpdateEnabled)
+                    .onChange(of: autoUpdateEnabled) { _, enabled in
+                        UpdaterManager.shared.automaticallyChecksForUpdates = enabled
+                    }
                 Button("Check for Updates…") {
                     NotificationCenter.default.post(name: .checkForUpdatesRequested, object: nil)
                 }

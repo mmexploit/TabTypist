@@ -32,6 +32,10 @@
     <key>SUPublicEDKey</key>
     <string>5sttwMvy/vY4tJR7oPU8bkYFLvvDFo8XWhAIpDxgIzU=</string>
     <key>SUFeedURL</key>
-    <string>https://tabtypist.com/appcast.xml</string>
+    <string>https://github.com/mmexploit/TabTypist/releases/latest/download/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

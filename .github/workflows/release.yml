@@ -44,16 +44,19 @@ jobs:
       - name: Create DMG
         run: bash scripts/make-dmg.sh
 
-      - name: Generate Sparkle appcast entry
+      - name: Generate Sparkle appcast feed
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: bash scripts/generate-appcast-entry.sh "${{ github.ref_name }}"
 
-      - name: Create GitHub pre-release
+      # prerelease: false so releases/latest/download/appcast.xml — the SUFeedURL
+      # in Info.plist — resolves to this release. GitHub's "latest" only points to
+      # non-prerelease, non-draft releases. Title still marks the beta.
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: true
+          prerelease: false
           generate_release_notes: true
           files: |
             dist/TabTypist.dmg
-            dist/appcast-entry.xml
+            dist/appcast.xml

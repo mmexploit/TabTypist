@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import Sparkle
 import SwiftUI
 
 // TabTypist is a macOS menu bar app.
@@ -24,27 +23,22 @@ struct TabTypistApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var coreProcess: Process?
-    private var updaterController: SPUStandardUpdaterController?
     private var checkForUpdatesCancellable: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // startingUpdater: false — avoids XPC trust failure dialog on builds
-        // without a Developer ID cert (ad-hoc / self-signed). Flip to true once
-        // the app is signed with Developer ID and appcast.xml is live.
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
+        // Start Sparkle. Feed + signing config live in Info.plist (SUFeedURL,
+        // SUPublicEDKey, SUEnableAutomaticChecks). The updater performs scheduled
+        // background checks and is also driven manually below.
+        UpdaterManager.shared.start()
 
         checkForUpdatesCancellable = NotificationCenter.default.addObserver(
             forName: .checkForUpdatesRequested,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            self?.updaterController?.checkForUpdates(nil)
+        ) { _ in
+            UpdaterManager.shared.checkForUpdates()
         }
 
         // Set up menu bar

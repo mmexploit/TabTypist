@@ -13,8 +13,12 @@
 #   cat /tmp/sparkle_pk.txt | pbcopy && rm /tmp/sparkle_pk.txt
 #   gh secret set SPARKLE_PRIVATE_KEY   # paste from clipboard
 #
-# Output: dist/appcast-entry.xml — upload/merge into https://tabtypist.com/appcast.xml
+# Output: dist/appcast.xml — uploaded as a release asset and served via
+#         https://github.com/<owner>/<repo>/releases/latest/download/appcast.xml
+#         (matches SUFeedURL in Resources/Info.plist).
 set -euo pipefail
+
+FEED_URL="https://github.com/${GITHUB_REPOSITORY:-mmexploit/TabTypist}/releases/latest/download/appcast.xml"
 
 TAG="${1:-}"
 [ -n "$TAG" ] || { echo "Usage: $0 <tag>  (e.g. v0.1.0)" >&2; exit 1; }
@@ -30,7 +34,12 @@ VERSION="${TAG#v}"
 BUILD_NUMBER=$(defaults read "$(pwd)/Resources/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
 DMG_SIZE=$(stat -f%z "$DMG")
 PUBDATE=$(date -u "+%a, %d %b %Y %H:%M:%S +0000")
-DOWNLOAD_URL="https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo 'tabtypist/TabTypist')/releases/download/${TAG}/TabTypist.dmg"
+# Resolve owner/repo. In GitHub Actions GITHUB_REPOSITORY is always set; locally
+# fall back to gh. The previous hard-coded 'tabtypist/TabTypist' fallback produced
+# 404 download URLs in CI when gh wasn't authed — do not reintroduce it.
+REPO="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)}"
+[ -n "$REPO" ] || { echo "ERROR: could not determine owner/repo (set GITHUB_REPOSITORY)." >&2; exit 1; }
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/TabTypist.dmg"
 
 echo "==> Signing DMG with EdDSA key..."
 # sign_update reads its key from the Keychain by default; the deprecated -s flag
@@ -45,12 +54,12 @@ else
 fi
 
 mkdir -p dist
-cat > dist/appcast-entry.xml << EOF
+cat > dist/appcast.xml << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>TabTypist Changelog</title>
-        <link>https://tabtypist.com/appcast.xml</link>
+        <link>${FEED_URL}</link>
         <description>Most recent changes.</description>
         <language>en</language>
         <item>
@@ -68,6 +77,6 @@ cat > dist/appcast-entry.xml << EOF
 </rss>
 EOF
 
-echo "==> appcast entry → dist/appcast-entry.xml"
-echo "    Upload to: https://tabtypist.com/appcast.xml"
+echo "==> appcast feed → dist/appcast.xml"
+echo "    Served at: ${FEED_URL}"
 echo "    Signature: ${SIGNATURE}"

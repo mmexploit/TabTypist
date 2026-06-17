@@ -41,10 +41,10 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
   gh secret set SPARKLE_PRIVATE_KEY   # paste from clipboard
   ```
 
-  Post-GA (before public launch): add Developer ID cert + notarization secrets, flip `startingUpdater: true` in `TabTypistApp.swift`, re-enable inside-out signing in `release.yml`.
+  Auto-update is now live: `UpdaterManager` starts Sparkle with `startingUpdater: true`, the feed is served at `https://github.com/mmexploit/TabTypist/releases/latest/download/appcast.xml` (uploaded as a release asset by `release.yml`), and daily background checks are on (`SUEnableAutomaticChecks`). Post-GA (before public launch): add Developer ID cert + notarization secrets so Sparkle's XPC installer can apply downloaded updates (checking/downloading works ad-hoc; the final install step needs a trusted signature), and re-enable inside-out signing in `release.yml`.
 
 ## Phase 5 — Clean-machine QA
 - [ ] **#11 Clean-machine QA smoke test** — install DMG on a clean Mac/user; grant Accessibility + Input Monitoring; finish onboarding; download a model; test focus → ghost text → Tab accept → Esc dismiss; verify new guards (phrase-loop, junk-run, scaffolding stop, OCR cache) in the wild.
 
 ## Phase 6 — Cut the release
-- [ ] **#12 Cut the v0.1.0 beta release** — `git tag v0.1.0 && git push origin v0.1.0` → triggers `release.yml` → CI builds, signs, notarizes, creates GitHub pre-release with DMG + appcast entry. After CI passes: merge `dist/appcast-entry.xml` into `docs/appcast.xml` and deploy to `https://tabtypist.com/appcast.xml`.
+- [ ] **#12 Cut the v0.1.0 beta release** — `git tag v0.1.0 && git push origin v0.1.0` → triggers `release.yml` → CI builds, signs, creates a GitHub release (`prerelease: false` so `/releases/latest/` resolves) with `TabTypist.dmg` + `appcast.xml`. No manual deploy step: Sparkle reads the `appcast.xml` asset directly via `/releases/latest/download/appcast.xml`.
