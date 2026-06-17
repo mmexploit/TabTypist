@@ -873,3 +873,46 @@ footer.foot .f-note { color: var(--ink-2); border-top: 1px solid var(--line-l); 
 .gh-note { font-family: var(--f-mono); font-size: 12px; color: var(--ink-2); margin-top: 4px; line-height: 1.5; text-align: center; }
 @media (max-width: 900px) { .core-grid { grid-template-columns: 1fr; gap: 38px; } }
 @media (max-width: 520px) { .arch2 { grid-template-columns: 1fr; gap: 14px; } .a2-link { flex-direction: row; } .a2-arrow { transform: rotate(90deg); } }
+
+/* ============ DOWNLOAD EMAIL MODAL ============ */
+.dl-modal {
+  position: fixed; inset: 0; z-index: 200;
+  display: none; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(8,10,18,0.55); backdrop-filter: blur(7px) saturate(1.2);
+}
+.dl-modal.show { display: flex; animation: dlFade .18s var(--ease); }
+@keyframes dlFade { from { opacity: 0; } to { opacity: 1; } }
+.dl-card {
+  position: relative; width: 100%; max-width: 384px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line-l); border-radius: calc(18px * var(--rm));
+  padding: 30px 28px 24px; text-align: center;
+  box-shadow: 0 28px 70px rgba(0,0,0,0.40);
+  animation: dlRise .22s var(--ease);
+}
+@keyframes dlRise { from { transform: translateY(10px) scale(.985); opacity: 0; } to { transform: none; opacity: 1; } }
+.dl-card h3 { font-family: var(--f-display); font-size: 22px; margin: 0 0 8px; }
+.dl-card .dl-copy { font-size: 14.5px; color: var(--ink-2); line-height: 1.55; margin: 0 0 18px; }
+.dl-card form { display: flex; flex-direction: column; gap: 10px; }
+.dl-card #dlEmail {
+  font-family: var(--f-body); font-size: 15px; color: var(--ink);
+  padding: 12px 14px; border: 1px solid var(--line-l); border-radius: calc(11px * var(--rm));
+  background: var(--paper-2); transition: border-color .15s, box-shadow .15s;
+}
+.dl-card #dlEmail:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-glow); }
+.dl-card #dlEmail:user-invalid { border-color: var(--rust); }
+.dl-card form .btn { justify-content: center; }
+.dl-skip {
+  margin-top: 12px; background: none; border: 0; cursor: pointer;
+  font-family: var(--f-body); font-size: 14px; color: var(--ink-2);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.dl-skip:hover { color: var(--ink); }
+.dl-priv { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-2); margin: 16px 0 0; }
+.dl-x {
+  position: absolute; top: 12px; right: 12px; width: 30px; height: 30px;
+  display: grid; place-items: center; border: 0; cursor: pointer;
+  background: var(--paper-3); color: var(--ink-2); border-radius: 50%;
+  font-size: 18px; line-height: 1; transition: background .15s, color .15s;
+}
+.dl-x:hover { background: var(--line-l); color: var(--ink); }
