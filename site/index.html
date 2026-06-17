@@ -85,41 +85,38 @@
 <section class="band workflow" id="why" data-screen-label="Why">
   <div class="wrap">
     <div class="sec-head center reveal">
-      <h2>Your words shouldn't take a round trip<br />through someone else's chatbot.</h2>
-      <p>Drag the line. To the left, the copy-paste-switch-wait loop that breaks your focus and ships your text to a third party. To the right, the same sentence finished in place — on-device, in the app you're already in.</p>
+      <h2>Two ways the same sentence gets finished.</h2>
+      <p>Drag the axis to slide between them — the copy-paste-switch-wait detour on one side, the same line finished in place on the other.</p>
     </div>
 
     <div class="horizon reveal" id="horizon" style="--split:52">
-      <!-- LEFT — Distraction Vortex (the status quo) -->
+      <!-- LEFT — the detour (status quo) -->
       <div class="layer vortex">
-        <div class="page">
-          <div class="page-tag bad">The status quo · Distraction Vortex</div>
-          <ol class="stepper">
-            <li><span class="st-node">1</span><div class="st-body"><b>Select &amp; copy</b><span>your draft and all the context around it</span></div></li>
-            <li class="leak"><span class="st-node">2</span><div class="st-body"><b>Switch to a chatbot tab</b><span class="warn">↗ you've just left the app you were working in</span></div></li>
-            <li class="leak"><span class="st-node">3</span><div class="st-body"><b>Paste it in &amp; wait</b><span class="warn">⚠ confidential text now lives on someone else's server</span></div></li>
-            <li><span class="st-node">4</span><div class="st-body"><b>Copy back, switch, re-format</b><span>and try to find your train of thought again</span></div></li>
-          </ol>
-          <div class="page-foot bad">Flow broken · context leaked · minutes gone</div>
+        <div class="poster poster-l">
+          <div class="hz-in">
+            <span class="hz-pill bad"><span class="pdot"></span>Status · Context Detour</span>
+            <h3 class="hz-head serif">Your draft takes a <span class="strike">round&nbsp;trip</span> through someone else's server.</h3>
+            <p class="hz-sub">Copy → switch tab → paste → wait → paste&nbsp;back. Focus breaks, and confidential text leaves the device.</p>
+            <span class="hz-foot bad">Flow broken · context leaked · minutes gone</span>
+          </div>
         </div>
       </div>
-      <!-- RIGHT — Local Flow State (with TabTypist) -->
+      <!-- RIGHT — on-device flow -->
       <div class="layer flow">
-        <div class="page">
-          <div class="page-tag good">With TabTypist · Local Flow State</div>
-          <div class="flow-field">
-            <div class="ff-meta">Reply · To: alex@team.co</div>
-            <div class="ff-text">Thanks for flagging that — <span class="mg">I'll send the revised numbers over by end of day.</span><span class="ff-pill">⇥ Tab</span></div>
+        <div class="poster poster-r">
+          <div class="hz-in">
+            <span class="hz-pill good">On-device Inference</span>
+            <h3 class="hz-head">Finished right where you're already typing.</h3>
+            <p class="hz-sub">TabTypist completes the sentence inline. One <b>Tab</b> accepts it — nothing ever leaves the Mac.</p>
+            <span class="hz-foot good">In your flow · on-device · instant</span>
           </div>
-          <p class="flow-read"><b>It reads what's already on your screen</b> and finishes the sentence you were writing. One key accepts it — nothing leaves the Mac.</p>
-          <div class="page-foot good">In your flow · on-device · instant</div>
         </div>
       </div>
       <!-- divider — The Friction Horizon -->
       <div class="horizon-bar" id="horizonBar" role="slider" aria-label="The Friction Horizon" aria-valuemin="0" aria-valuemax="100" aria-valuenow="52" tabindex="0">
-        <span class="hb-label">The Friction Horizon</span>
-        <span class="hb-grip"><i></i><i></i></span>
+        <span class="hb-grip"><span class="hb-axis">AXIS</span><span class="hb-arrows">⇄</span></span>
       </div>
+      <span class="hz-hint"><span class="ax">The Friction Horizon</span> · drag left or right to compare</span>
     </div>
   </div>
 </section>
@@ -323,6 +320,7 @@
           <span class="ghs-mark">★</span>
           <span class="ghs-txt">Star on GitHub</span>
           <span class="ghs-div"></span>
+          <span class="ghs-count">2.4k</span>
         </a>
         <p class="gh-note">Open core — read the engine, build a front-end, ship a platform.</p>
       </aside>
@@ -342,7 +340,7 @@
       <h2>Bring it to your team.</h2>
       <p>A lightweight menu-bar app — install, grant access, start typing. Nothing to configure or administer.</p>
       <div class="dl-ctas">
-        <a class="btn btn-acc dl-big" href="https://github.com/mmexploit/TabTypist/releases/latest/download/TabTypist.dmg" id="dmgBtn">Download for macOS<span class="sub">.dmg · macOS 13+ · Apple Silicon &amp; Intel</span></a>
+        <a class="btn btn-acc dl-big" href="https://github.com/mmexploit/TabTypist/releases/latest" target="_blank" rel="noopener" id="dmgBtn">Download for macOS<span class="sub">.dmg · macOS 13+ · Apple Silicon &amp; Intel</span></a>
       </div>
       <div class="brew">
         <code><span class="prompt">$</span> brew install --cask tabtypist</code>
@@ -368,6 +366,12 @@
   </div>
 </footer>
 
+<template id="__bundler_thumbnail">
+  <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100" height="100" rx="22" fill="#0068FD"/>
+    <text x="50" y="50" dominant-baseline="central" text-anchor="middle" font-family="Space Grotesk, sans-serif" font-size="56" font-weight="700" fill="#fff">T</text>
+  </svg>
+</template>
 <script src="demo.js"></script>
 <script src="interactions.js"></script>
 </body>
