@@ -119,3 +119,62 @@
     .catch(() => {});
   */
 })();
+
+/* ============================================================
+   Download email capture — optional, skippable.
+   Intercepts .js-download clicks, asks for an email, POSTs it to
+   /api/lead (Cloudflare Pages Function → D1), then starts the
+   download via the /download gateway. Skipping downloads directly.
+   ============================================================ */
+(function () {
+  const DOWNLOAD_URL = '/download/TabTypist.dmg'; // gateway → GitHub asset
+  const modal = document.getElementById('dlModal');
+  if (!modal) return;
+
+  const form = document.getElementById('dlForm');
+  const email = document.getElementById('dlEmail');
+  const skip = document.getElementById('dlSkip');
+  let lastFocus = null;
+
+  const open = (trigger) => {
+    lastFocus = trigger || document.activeElement;
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => email.focus(), 60);
+  };
+  const close = () => {
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  };
+  const download = () => { window.location.href = DOWNLOAD_URL; };
+
+  const sendLead = (value) => {
+    if (!value) return Promise.resolve();
+    return fetch('/api/lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: value }),
+      keepalive: true,
+    }).catch(() => {}); // never block the download on a logging failure
+  };
+
+  document.querySelectorAll('.js-download').forEach((el) => {
+    el.addEventListener('click', (e) => { e.preventDefault(); open(el); });
+  });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!email.checkValidity()) { email.reportValidity(); return; }
+    sendLead(email.value.trim()).finally(() => { close(); download(); });
+  });
+
+  skip.addEventListener('click', () => { close(); download(); });
+
+  modal.querySelectorAll('[data-dl-close]').forEach((el) =>
+    el.addEventListener('click', close));
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal.classList.contains('show')) close();
+  });
+})();
