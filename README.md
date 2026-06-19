@@ -41,6 +41,7 @@ Start typing anywhere. After a brief pause, a grey suggestion appears right at y
 - **Tab to accept, word by word** — take one word at a time or the full completion in a single key
 - **Yours to shape** — configurable completion length, personal writing-style rules, and per-app exclusions
 - **Light on your machine** — lazy keyboard tap, off-main IPC, and bounded OCR keep typing snappy
+- **Stays current** — built-in auto-updates (Sparkle) check daily and update in place; toggle them in Settings
 
 ## 📦 Install
 
@@ -76,7 +77,7 @@ Grant these in **System Settings → Privacy & Security**.
 | Quality | 3.9 GB | 16 GB+ |
 | Pro | 5.3 GB | 24 GB+ |
 
-Models are GGUF base checkpoints downloaded from HuggingFace during onboarding. A free HuggingFace read-only token is required.
+Models are GGUF base checkpoints downloaded from public HuggingFace repos during onboarding — no account or token needed. A HuggingFace token is only required if you point TabTypist at a custom GGUF in a gated or private repo (set it in Settings).
 
 ## Build from Source
 
@@ -132,9 +133,7 @@ The Rust binary lives at `TabTypist.app/Contents/Resources/tabtypist-core`. The 
 
 This is **v0.1.1**, an early beta. Expect rough edges:
 
-- Model download requires a HuggingFace token (self-hosting planned for v1.0)
 - Telemetry endpoint is not yet live
-- Automatic updates (Sparkle) are wired but the appcast is not yet hosted
 
 Bug reports and feedback are very welcome via [GitHub Issues](https://github.com/mmexploit/TabTypist/issues).
 

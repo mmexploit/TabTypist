@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tabtypist",
+  "main": "src/index.js",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    // Dynamic API paths invoke the Worker before the static-asset lookup.
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tabtypist-leads",
+      "database_id": "d1b9033c-4f89-4449-a3e9-3c4db321fc87"
+    }
+  ]
+}

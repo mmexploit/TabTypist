@@ -7,3 +7,9 @@ dist/
 .DS_Store
 *.
 .competitor-analysis/
+
+# Cloudflare Wrangler local cache/state
+.wrangler/
+# Local node deps (if wrangler is pinned locally)
+node_modules/
+.dev.vars
