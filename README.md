@@ -137,6 +137,18 @@ This is **v0.1.1**, an early beta. Expect rough edges:
 
 Bug reports and feedback are very welcome via [GitHub Issues](https://github.com/mmexploit/TabTypist/issues).
 
+## 🤝 Contributing
+
+Contributions are welcome! Open an issue or pull request anytime.
+
+The first time you open a PR, our CLA bot will ask you to sign the
+[Contributor License Agreement](CLA.md) by posting a one-line comment — a single
+click, only once. It grants the project the rights it needs to keep TabTypist
+sustainable (including offering it under alternative licenses in the future).
+
 ## 📄 License
 
-[Functional Source License 1.1](LICENSE) — free for non-production use; converts to Apache 2.0 four years after publication.
+[Functional Source License 1.1](LICENSE) — free for **personal and
+non-commercial** use, and for all non-production use. Commercial/competing use
+requires a separate arrangement. The license automatically converts to Apache
+2.0 four years after each version is published.
