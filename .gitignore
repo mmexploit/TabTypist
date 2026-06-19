@@ -7,3 +7,10 @@ dist/
 .DS_Store
 *.
 .competitor-analysis/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
