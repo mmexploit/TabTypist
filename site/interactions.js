@@ -127,7 +127,9 @@
    download via the /download gateway. Skipping downloads directly.
    ============================================================ */
 (function () {
-  const DOWNLOAD_URL = '/download/TabTypist.dmg'; // gateway → GitHub asset
+  // Downloads go direct to the GitHub release asset — no Cloudflare gateway.
+  const DOWNLOAD_URL =
+    'https://github.com/mmexploit/TabTypist/releases/latest/download/TabTypist.dmg';
   const modal = document.getElementById('dlModal');
   if (!modal) return;
 
@@ -135,9 +137,11 @@
   const email = document.getElementById('dlEmail');
   const skip = document.getElementById('dlSkip');
   let lastFocus = null;
+  let pendingHref = DOWNLOAD_URL; // the asset the clicked button points to
 
   const open = (trigger) => {
     lastFocus = trigger || document.activeElement;
+    pendingHref = (trigger && trigger.getAttribute('href')) || DOWNLOAD_URL;
     modal.classList.add('show');
     modal.setAttribute('aria-hidden', 'false');
     setTimeout(() => email.focus(), 60);
@@ -147,7 +151,7 @@
     modal.setAttribute('aria-hidden', 'true');
     if (lastFocus && lastFocus.focus) lastFocus.focus();
   };
-  const download = () => { window.location.href = DOWNLOAD_URL; };
+  const download = () => { window.location.href = pendingHref; };
 
   const sendLead = (value) => {
     if (!value) return Promise.resolve();
